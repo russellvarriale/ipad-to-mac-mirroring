@@ -1,0 +1,107 @@
+iPad to Mac Mirroring: native corresponding source
+================================================
+
+The original Swift app and its original build/test scripts are available under
+the scoped MIT license in the app source release. UxPlay and the native receiver
+modifications are GPL-3.0-or-later. Third-party code retains its own notices and
+licenses. The bundled app is not an MIT-only distribution. Keep the complete
+matching app source and native source archive available alongside each binary
+release, at no additional charge and with equally accessible download links.
+
+Source release contents
+-----------------------
+collect_corresponding_source.py verifies and collects the pinned source archives:
+the original UxPlay, libplist and OpenSSL releases; GStreamer core, plugins-base
+plugins-good and plugins-bad; GLib, proxy-libintl, libffi, PCRE2, zlib, libpng, ORC, Graphene,
+libjpeg-turbo; and the matching Cerbero build recipes and upstream patches.
+Exact HTTPS URLs and SHA-256 pins are in dependencies.json and
+source-dependencies.json. The GStreamer dependency pins are copied from the
+official Cerbero 1.28.8 recipes. runtime-components.json maps every packaged Mach-O file to its
+source component; the collector rejects an unreviewed runtime file-list change.
+The collector checks every byte before accepting
+an archive. It copies the patched UxPlay tree, local patch, build/package scripts,
+protocol definition, and native regression tests into the same source release.
+
+The selected SDK runtime embeds MoltenVK1.2.9. The collector includes that
+official source tag, the dependency commits pinned by its ExternalRevisions,
+and the dependencies pinned by its glslang known_good.json. This supplies source
+for the SDK dependency as well as its permissive Apache/BSD/MIT notices, instead
+of relying on a permissive license as an exception to GPL corresponding-source
+coverage. The included Cerbero moltenvk.recipe identifies SDK1.3.283.0 and its
+integration. This project does not modify MoltenVK code. The embedded version
+and official source revision chain have been checked; a complete SDK rebuild or
+bit-for-bit reproduction of the publisher's MoltenVK library was not performed.
+
+Generate and verify the source release
+--------------------------------------
+On the prepared native build directory, run:
+
+    python3 collect_corresponding_source.py
+
+This downloads missing source archives, checks all pins, and creates:
+
+    build/ipad-to-mac-mirroring-native-corresponding-source.tar.xz
+    build/ipad-to-mac-mirroring-native-corresponding-source.tar.xz.sha256
+
+To repeat using cached inputs without network access:
+
+    python3 collect_corresponding_source.py --offline
+
+The archive has normalized owner/time metadata and no account or workspace
+paths. It contains SHA256SUMS for the original archives and SOURCE-RELEASE.json
+with the receiver/patch hashes. Publish it beside the matching binary and app
+source release. The small GitHub source tree need not commit these generated
+archives; the matching binary release must provide equivalent source access.
+
+Rebuild and modify
+------------------
+The app README and build.sh describe rebuilding the Swift executable. The native
+source release uses an Apple Silicon Mac, macOS 14 or newer, Xcode command-line
+tools, Python 3, CMake and the other tools listed in rebuild_backend.py. From the
+unpacked native source directory:
+
+    mkdir -p downloads
+    cp archives/* downloads/
+    python3 rebuild_backend.py
+    python3 smoke_backend.py --embedded
+
+The standard rebuild verifies pinned official GStreamer runtime/development
+packages and extracts them locally; it does not run their installer scripts.
+Those two packages may still be downloaded even when source archives are cached.
+libplist and OpenSSL are compiled from the included source archives. The local
+GPL changes are present both as the full patched UxPlay tree and as the patch
+against the original archive. The standard rebuild creates bundle/Wireless.
+
+For modified GStreamer/GLib libraries, the Cerbero 1.28.8 archive contains all
+release recipes, upstream patches, platform configurations, and README build
+instructions. Its macOS ARM64 configuration is config/cross-macos-arm64.cbc;
+the official universal package uses config/cross-macos-universal.cbc. The exact
+source archives for the selected runtime libraries are included here. Build the
+desired modified libraries using those upstream instructions, stage their
+headers/pkg-config files/libraries under build/gstreamer, then reconfigure the
+native CMake build and run package_backend.py. Its dependencies come from that
+local staging tree. General-purpose toolchain/build-tool dependencies are listed
+by Cerbero and may require separate setup. A complete from-source Cerbero build
+has not been performed as part of this app's focused verification.
+
+For modified libplist, replace its source in sources/libplist-2.7.0 before the
+standard rebuild. The receiver is built from source and can be relinked against
+that modified static library. No object-only relinking kit is necessary when
+the complete receiver source and build scripts are supplied. The app's ad-hoc
+signature has no hardened-runtime library-validation restriction; modified
+bundles can be rebuilt and ad-hoc signed with the supplied scripts. No developer
+signing credential, notarization credential, or private installation key is
+required. Do not publish signing keys or add restrictions on modified builds.
+
+License guidance used
+---------------------
+https://opensource.org/license/mit
+https://www.gnu.org/licenses/license-list.html#Expat
+https://www.gnu.org/licenses/gpl-3.0.en.html
+https://www.gnu.org/licenses/gpl-faq.en.html#MereAggregation
+https://www.gnu.org/licenses/gpl-faq.en.html#SourceAndBinaryOnDifferentSites
+
+GPLv3 defines corresponding source and binary/source distribution requirements.
+Process separation alone does not determine whether programs form an aggregate
+or a combined work. This source release preserves all relevant source and
+license rights rather than relying on the private IPC boundary as an exception.

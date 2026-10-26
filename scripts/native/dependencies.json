@@ -1,0 +1,27 @@
+{
+  "UxPlay-v1.73.7.tar.gz": {
+    "url": "https://github.com/FDH2/UxPlay/archive/refs/tags/v1.73.7.tar.gz",
+    "sha256": "65feb8732de666a7161a9e562aa603a7f5fe0ebb890c2a30c5e1a9c85c76309f",
+    "verification": "Pinned archive from the upstream v1.73.7 tag (df67c21)."
+  },
+  "libplist-2.7.0.tar.bz2": {
+    "url": "https://github.com/libimobiledevice/libplist/releases/download/2.7.0/libplist-2.7.0.tar.bz2",
+    "sha256": "7ac42301e896b1ebe3c654634780c82baa7cb70df8554e683ff89f7c2643eb8b",
+    "verification": "Pinned official upstream release asset."
+  },
+  "openssl-3.6.5.tar.gz": {
+    "url": "https://www.openssl.org/source/openssl-3.6.5.tar.gz",
+    "sha256": "a2157c2830efdec3788939b00c9b0638306d3f0bbb76dc4832ee503bb397df98",
+    "verification": "Matches the upstream openssl-3.6.5.tar.gz.sha256 file."
+  },
+  "gstreamer-1.0-1.28.8-universal.pkg": {
+    "url": "https://gstreamer.freedesktop.org/data/pkg/osx/1.28.8/gstreamer-1.0-1.28.8-universal.pkg",
+    "sha256": "d371ab04a7632713626836c2fc234e863cc98484c74c473eba99b0fbd9b3a3fe",
+    "verification": "Matches the upstream .pkg.sha256sum file. Official PKG has no Apple installer signature; installer scripts are never executed."
+  },
+  "gstreamer-1.0-devel-1.28.8-universal.pkg": {
+    "url": "https://gstreamer.freedesktop.org/data/pkg/osx/1.28.8/gstreamer-1.0-devel-1.28.8-universal.pkg",
+    "sha256": "e6d380bc17be7eccf13e0154567d4718fc9321da822408c7ca0cd808b3d4a3f7",
+    "verification": "Matches the upstream .pkg.sha256sum file. Installer scripts are never executed."
+  }
+}

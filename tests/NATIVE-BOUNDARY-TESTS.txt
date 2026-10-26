@@ -1,0 +1,27 @@
+Native boundary checks
+======================
+
+From the prepared source folder:
+  python3 tests/run_native_boundary_tests.py --source scripts/native/sources/UxPlay-1.73.7
+
+The runner compiles current http_request.c and byteutils.c directly. It extracts
+same_mirror_peer and valid_codec_payload from the current raop_rtp_mirror.c at
+runtime, so it does not silently test a stored helper implementation. Changed
+extraction anchors cause an explicit failure.
+
+The two compilations use:
+  xcrun clang -std=c11 -g -fsanitize=address,undefined -fno-omit-frame-pointer
+with the current lib/ and lib/llhttp/ include directories. HTTP inputs link
+http_request.c plus llhttp/{api,http,llhttp}.c. Codec/peer inputs link the current
+extracted helpers plus byteutils.c. ASAN_OPTIONS and UBSAN_OPTIONS both set
+halt_on_error=1. Compilation and execution use argument arrays, not a shell.
+
+Expected output:
+  PASS: 8 HTTP boundary and fragmented protocol cases
+  PASS: 393 exact-source codec and peer boundary cases
+  PASS: 401 focused native boundary cases; ASan and UBSan enabled
+
+Test binaries and the generated helper source live only in an automatically
+removed temporary directory. No AirPlay receiver, iPad feed, network listener,
+or user interface is started. These tests do not cover all protocol handlers,
+cryptography, streaming behavior, or the third-party media parsers.

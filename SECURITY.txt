@@ -1,0 +1,73 @@
+Security and privacy
+====================
+
+This app receives an iPad screen locally for use with a Mac recorder.
+It does not provide a recording service, account, analytics service,
+remote control, cloud relay, or automatic updater.
+
+USB mode
+--------
+USB preview requests macOS Camera permission because Apple presents the
+iPad screen as a capture device. The code selects Apple muxed screen
+sources, not the Mac webcam. Audio input ports are disabled. The Mac
+webcam and microphone remain available to your recording application.
+
+Wireless mode
+-------------
+Start it deliberately from the Wireless sidebar. Use it on a
+trusted local network. Starting it publishes an AirPlay service and
+opens local network listeners. Bonjour discovery necessarily exposes
+network endpoints to the local network. The default receiver display
+name is generic and the receiver identity changes on each Start.
+
+The wireless backend requires a fresh on-screen connection code.
+The UxPlay password flow uses legacy HTTP Digest authentication; a
+four-digit code is a connection barrier, not strong protection against
+an adversary on the same network. Do not forward its ports to the
+Internet or rely on it for confidential use on an untrusted network.
+
+Stop closes the receiver. Switching to USB, closing the main window,
+or quitting the app also stops it. Hiding the sidebar keeps it running. The bundled backend watches for parent-process death
+so a crashed or force-quit app does not leave a receiver listening.
+
+Wireless video crosses an inherited socketpair with no listener, socket
+path, saved video file, or new capture permission. Framed packets and
+codec parameters are bounded. The parent uses Apple's video renderer;
+only one source is displayed at a time.
+
+Storage and permissions
+-----------------------
+No media recordings, screenshots, client keys, connection-code history,
+or raw receiver logs are intentionally written by this app. Connection
+information is used in memory. Temporary GStreamer cache files live in
+a private per-run directory and are removed on a normal stop. An abrupt
+process/system failure can leave cache files in the system temporary
+directory; those files are not a saved screen recording.
+
+macOS can persist app permissions and window placement. The recording
+application you choose has its own storage and privacy
+behavior outside this app's control.
+
+The backend is a separate process, but it is not a security sandbox.
+A network-parser vulnerability in it could affect the logged-in user.
+Selected upstream bounds issues are patched in the included source;
+the review does not prove the absence of other vulnerabilities.
+
+Publishing source
+-----------------
+Publish the prepared source folder, not the chat workspace, downloads,
+test outputs, private screenshots, runtime caches, or built app. The
+source archive intentionally contains no Git history or local Git
+identity. Select your desired Git author identity/email before creating
+commits. A public GitHub profile and commit author metadata can reveal
+identity independently of the code.
+
+See SECURITY-REVIEW.txt for the exact review scope, fixes, tests, and
+remaining limitations for this version. Build dependencies and license
+information are listed in THIRD-PARTY-NOTICES.txt.
+
+Reporting an issue
+------------------
+Do not put credentials, personal screenshots, connection codes, device
+identifiers, or sensitive network traces in a public issue. Describe
+the affected version and a minimal reproduction using synthetic data.

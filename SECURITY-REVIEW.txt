@@ -1,0 +1,323 @@
+Security and privacy review — iPad to Mac Mirroring 2.2.0
+=======================================================
+Review date: 2026-10-26
+
+Scope and conclusion
+--------------------
+Reviewed the USB capture code, wireless controller, process arguments and
+environment, temporary storage, lifecycle handling, selected UxPlay network
+parsers, the private compressed-video channel and parent renderer, build
+inputs, and packaging. Version 2.2.0 keeps USB and wireless video in the
+same main window, with wireless settings in a sidebar, and adds bounded
+status-event delivery, the public name, and scoped open-source licensing. This is a focused
+code review with boundary tests, not a penetration-test certification or a complete audit
+of UxPlay, OpenSSL, libplist, GStreamer, or the Apple frameworks.
+
+No embedded private device identifiers, credentials, or personal captures
+were found in the reviewed app sources. USB device names/identifiers are
+discovered at runtime and are not intentionally saved in logs. The source
+includes the author name, public GitHub profile/repository URL, and copyright
+notice explicitly chosen for public attribution. These intentional credits
+are distinct from local account paths, private device/network metadata, or
+credentials, which must not appear in the release. Final archive validation
+is recorded below.
+
+Confirmed issues addressed
+--------------------------
+1. High: malformed network data could cause out-of-bounds reads in UxPlay.
+   The bundled patch validates exact lengths and non-null data for pairing
+   keys/authentication tags and screen-session encryption keys before
+   fixed-size copies (UxPlay lib/raop_handlers.h). It validates codec
+   configuration offsets and H.264/H.265 parameter-set lengths before
+   reading or copying them (lib/raop_rtp_mirror.c). The review established
+   unsafe reads and possible process failure; it did not establish remote
+   code execution or demonstrate disclosure of personal data.
+
+2. Medium: unauthenticated requests and mirror packets could grow memory
+   without an appropriate bound. Request allocation now enforces an 8 KiB
+   URL limit, 32 KiB cumulative header-text limit, and 1 MiB body limit
+   before allocation (lib/http_request.c). Declared oversized bodies are
+   rejected when headers finish. Mirror payloads are limited to 16 MiB,
+   and allocation failures end the affected stream safely. NAL length
+   checks precede reads and require a non-empty NAL. These are resource
+   bounds, not a guarantee against all network denial-of-service attacks.
+
+3. Medium: the HTTP URL callback read protocol text outside its supplied
+   input span. Protocol and version now use the parser's own callbacks,
+   including when a request arrives one character at a time. Byte readers
+   and writers use memcpy instead of potentially unaligned typed pointer
+   accesses (lib/byteutils.c).
+
+4. Medium: malformed Digest authentication fields could cause null pointer
+   accesses. Missing fields and malformed nonce values now fail closed;
+   error paths release temporary allocations (lib/pairing.c and
+   lib/raop_handlers.h). Random-PIN generation failure no longer falls
+   back to the predictable code 1234; it rejects the connection.
+
+5. Medium: a mirror data socket could accept a different network peer
+   from the peer that established the control session. The receiver now
+   compares peer addresses, including IPv6 scope, before accepting that
+   socket. This does not authenticate individual processes sharing an IP
+   address or replace the AirPlay authentication protocol.
+
+6. Low: a client name containing newlines could spoof a human-readable
+   PIN/status line in the controller's display. Dedicated machine events
+   now carry a per-run 128-bit random token. WirelessReceiver.swift accepts
+   only matching events and validates the four ASCII PIN digits. This
+   fixes display spoofing; the original issue did not bypass server-side
+   authentication. Raw child output and partial lines are bounded and are not retained as
+   diagnostic files. A nonblocking serial pipe reader delivers small events
+   promptly and drains final events before cleanup; native event/log writes
+   are serialized to preserve complete lines.
+
+7. Privacy: initial static OpenSSL build settings embedded the local build
+   account's absolute directory in the receiver binary. The dependency
+   build now uses generic installation/configuration paths, and the
+   receiver is relinked. Compiler path mapping also avoids embedding local
+   source paths. Official GStreamer binaries may retain their publisher's
+   build paths; those are upstream package metadata, not this app user's
+   personal data.
+
+8. Medium: malformed authentication sequences could terminate the receiver.
+   Legacy SRP endpoints were still reachable in the password-only build;
+   a later pairing stage sent first could dereference absent SRP state.
+   Those unused endpoints now return 403 before SRP handler dispatch
+   (UxPlay lib/raop.c). Defense-in-depth checks require allocated SRP
+   state, valid lengths, and a verified proof before session confirmation;
+   failed authenticated decryption is rejected (lib/pairing.c).
+
+   Separately, an invalid low-order X25519 peer key could invoke a fatal
+   crypto error handler before password authentication. Derivation now
+   returns a checked failure, clears failed session state, and rejects
+   the connection with status 470 instead of exiting or returning
+   uninitialized handshake data (lib/crypto.c, lib/crypto.h,
+   lib/pairing.c, and lib/raop_handlers.h). The active password mode and
+   its mandatory Digest challenge remain in place; no alternate SRP
+   authentication or peer-to-peer mode was enabled.
+
+   Validation: 24 additional early-state/sequence cases passed with
+   AddressSanitizer and UndefinedBehaviorSanitizer. A separate owned
+   test receiver rejected unused SRP routes, including premature
+   structurally valid pairing stages, while remaining alive. It also
+   rejected X25519 peer values 0 and 1 without exiting, preserved the
+   mandatory password challenge, and accepted valid peer value 9 with
+   a 200 response containing the expected 96-byte first-stage handshake.
+   These checks used synthetic inputs; they were not run against an
+   active personal iPad session.
+
+9. Availability: repeated genuine pairing/status events could queue an
+   unbounded number of main-thread UI closures despite bounded raw output.
+   A fixed-slot per-run mailbox now retains only the latest pairing state
+   and bounded lifecycle/error state, with at most one queued main drain.
+   Terminal ordering preserves actionable failures across separate drains;
+   stopped/stale runs are rejected. A Stop-before-started ordering edge
+   now records factual process startup before suppressing unwanted UI,
+   keeping restart disabled until the owned process exits. These are
+   availability/lifecycle fixes, not authentication bypasses or established
+   personal-data leaks. Regression tests include 10,000 status events while
+   main delivery is blocked and separated-drain error/shutdown sequences.
+
+Additional protections reviewed
+-------------------------------
+- USB mode selects Apple muxed screen sources and disables audio ports.
+  It has no recording or upload implementation and does not open the Mac
+  microphone or webcam.
+- Wireless reception requires an explicit Start. The receiver name is
+  generic by default, does not append the computer name, and uses a new
+  receiver identity on each Start. Bonjour still advertises a network
+  endpoint on the local network.
+- An explicit Start first checks local Bonjour operation state with
+  NWBrowser. It does not retain discovered devices or their metadata.
+  Permission cancellation and stale callbacks cannot launch a receiver.
+  Native Bonjour registration success requires both service acknowledgments;
+  registration errors emit a bounded status and terminate the receiver.
+- The controller launches a fixed bundled executable with an argument
+  array rather than a shell. Receiver names are restricted and bounded.
+  The child receives an explicit environment, bundled plugin search paths,
+  and a private per-run directory instead of inherited user configuration.
+- The patched backend rejects unsupported command-line options before
+  the upstream parser can perform file side effects. User rc files,
+  HLS/URL playback, custom pipelines, media dumps, saved keys, registration
+  files, metadata exports, and audio playback are disabled for this build.
+- Stop, switching to USB, closing the main window, and normal app quit
+  stop the owned child. Termination escalates to SIGKILL only for that same
+  running child if necessary. A separate backend watchdog exits after its
+  parent dies or its private video endpoint closes, including while idle.
+  Hiding wireless settings or the controls does not end an active session.
+- A normal stop removes the private temporary directory. Abrupt process or
+  system failure can leave temporary configuration/cache data there. Such
+  data is not a saved video, PIN history, or client-key register. Embedded
+  mode bypasses GStreamer initialization and its video-window creation.
+- Version 2.1 sends bounded, already decrypted H.264 access units through an
+  unnamed AF_UNIX socketpair inherited only by the parent and owned child.
+  There is no local listener, socket pathname, video file, or new Screen
+  Recording permission. The child validates the socket family/type and
+  same-user peer, plus the parent PID where supported. Its nonblocking
+  serialized writer has a two-second whole-packet deadline; partial-write
+  failure terminates the receiver instead of continuing a corrupt stream.
+- The parent validates the exact IWV1 header, packet kind, reserved field,
+  and length before allocation. It retains at most one 16 MiB payload,
+  limits parser work per read/queue turn, and consumes packets synchronously
+  on a private serial queue. Stop marks expected shutdown immediately and
+  closes the owned channel. Malformed input, unexpected EOF, or consumer
+  rejection closes it; no raw video bytes enter diagnostics or files.
+- The parent H.264 parser bounds access units, NAL count, parameter-set
+  lengths, dimensions, and pixel count before submitting to Apple media
+  decoding. Renderer state is serialized and keyed by a per-run UUID.
+  A bounded readiness wait and keyframe recovery avoid accumulating frame
+  closures. UI events use a mailbox with at most one queued main-thread
+  drain and the latest dimensions/state, including during reset floods.
+- The main canvas switches between USB and wireless display layers.
+  Session/mode guards reject stale callbacks, and Stop clears decoder state
+  and the displayed wireless image. The main application owns the video
+  window, so the current embedded mode bypasses the fallback native window
+  presentation bridge and does not require a separate-window activation
+  action, screen recapture, or accessibility control.
+
+Completed focused tests
+-----------------------
+430 focused native cases passed with AddressSanitizer and UndefinedBehaviorSanitizer:
+- 8 HTTP parser cases: valid fragmented RTSP/HTTP input and inputs at and
+  beyond the URL, cumulative header, and body limits.
+- 393 codec/peer cases: exact-source codec validation helpers with short
+  H.264/H.265 buffers, valid/invalid parameter-set sizes, and matching or
+  mismatching IPv4/IPv6 peers and scopes.
+- 24 authentication state/sequence cases: missing or premature SRP stages,
+  proof-state checks, low-order X25519 rejection, and preservation of a
+  valid handshake and cleanup after a later invalid peer key.
+- 5 mocked Bonjour lifecycle scenarios: both registration acknowledgments,
+  immediate/asynchronous errors, dispatch scheduling failure, and later
+  service-daemon failure. No real LAN discovery was exercised by these
+  mocked scenarios.
+
+The codec tests exercise extracted functions from the patched source,
+not a full receiver session. They do not constitute fuzzing of all
+network handlers or media decoders. PIN RNG failure handling was reviewed
+in source; a failing system random-number generator was not simulated.
+
+Runtime and release validation
+------------------------------
+- 110 current-source Swift controller/status/IPC checks passed: token and
+  PIN parsing, spoof/stale-input rejection, fragmented/bounded output,
+  descriptor/exit handling, secure-token failure paths, video-failure and
+  display-ready guards, bounded status delivery, failure precedence, and
+  Stop/start ordering. A 10,000-event blocked-main flood retained one
+  bounded batch/latest pairing state. These use local fixtures, not a live
+  network receiver or personal iPad media.
+- 94 current-source private-video framing/IPC checks passed: every packet
+  split, one-byte fragments, exact 16 MiB acceptance, malformed/oversized
+  headers, truncated EOF, consumer rejection, reset-flood work limits,
+  expected Stop, socket delivery, and inherited child fd 0.
+- 53 current-source renderer checks passed with generated H.264: a real
+  IDR followed by two dependent frames reached display readiness, while
+  parser limits, reset/keyframe recovery, stale/new sessions, and bounded
+  UI-event delivery passed. A 512-reset burst coalesced to one UI reset.
+  The test briefly opens a synthetic window and uses the local codec
+  service. It does not capture a screen/device or create a recording.
+- The 430 baseline native sanitizer cases listed above remain applicable
+  to the unchanged parser/authentication hardening. Fourteen additional
+  embedded-channel scenarios passed ASan/UBSan after the native rename,
+  covering exact framing, descriptor/peer validation, partial writes,
+  deadlines, and channel closure (444 focused native cases in total).
+- All 13 native backend smoke scenarios passed after the rename: linkage,
+  signatures and private-path scan; invalid flags/descriptors; both Bonjour
+  acknowledgments; initial reset; zero helper windows; URL/SRP rejection;
+  unchanged Digest challenge; invalid/valid X25519 behavior; parent-death
+  and idle-channel shutdown.
+- Earlier live hardware validation confirmed USB video at 1600 x 1200,
+  authenticated wireless video in the shared main window, no extra video
+  window, video-only Clean View, and Loom's same-window/camera-bubble
+  preview. The user confirmed the integrated workflow on version 2.1.
+  Version 2.2.0 changes naming, in-app guidance and status delivery while
+  preserving the video path. Latest renamed-build runtime checks are
+  recorded with the final package. Rotation was not separately verified.
+  No actual recorder recording or upload was performed by the agent.
+- Public README screenshots use a separate, isolated UI fixture with device
+  discovery, Connect, receiver startup, and capture permissions disabled.
+  Generated video is visibly labeled ILLUSTRATIVE SAMPLE SCREEN. Only that
+  fixture window was captured. JPEG application/comment metadata was
+  stripped without changing encoded scan data; no personal media, live PIN,
+  desktop, or account content is included.
+- The package includes scoped MIT licensing for original app/docs/artwork,
+  preserved GPL/native/upstream notices, and a separate matching native
+  corresponding-source asset. The collector verified 27 source archives,
+  36 runtime component mappings, 92 native source files and current build
+  inputs, with normalized archive ownership/time metadata. Complete
+  Cerbero/SDK rebuilding and bit-for-bit runtime reproduction were not
+  performed; CORRESPONDING-SOURCE.txt states the exact coverage and limits.
+- Final independent renamed-release audit passed: 155 source files and
+  91 app files; source ZIP inventory/bytes match the prepared folder.
+  No unexpected private account/device/network data, credentials, raw logs,
+  Git history/caches, unsafe paths, or symlinks were found. The intentional
+  public author/profile/repository notice is retained. All three approved
+  JPEGs contain only synthetic/generic UI content and zero application or
+  comment metadata/trailing data. All 21 local docs/image links resolve.
+- A freshly extracted app passed strict deep signature verification and
+  matched the reviewed backend hash. No whole-word recorder-brand reference
+  remains in the app executable or in-app Swift/Info text. The renamed app
+  launched with its new title and recorder-neutral USB controls. The live
+  iPad/recorder test described above was on the same video path in 2.1;
+  no extra renamed-build hardware/rotation test is claimed here.
+- The separate native corresponding-source archive was independently
+  checked: 144 regular files and 18 directories, safe paths and normalized
+  metadata, all 27 source pins/checksums, all 92 patched native files, all
+  36 runtime mappings, and the matching release/patch manifests. No private
+  data or generated artifacts were found. Its outer hash also matches.
+  The prepared folder's actual controller and transport runners passed
+  110 and 94 checks again. Signing is local ad-hoc signing, not Developer
+  ID/notarization; complete Cerbero/SDK source rebuilding remains unverified.
+
+Dependencies and remaining limitations
+--------------------------------------
+The selected versions are UxPlay 1.73.7 with the included patches,
+GStreamer 1.28.8, libplist 2.7.0, and OpenSSL 3.6.5. Source hashes,
+build information, and license notices accompany the prepared source.
+The UxPlay version includes its upstream fix for CVE-2025-60458.
+GStreamer 1.28.8 includes the October 2026 security fixes. These version
+checks do not imply that every transitive dependency is vulnerability-free.
+
+The fresh four-digit AirPlay code uses UxPlay's legacy HTTP MD5 Digest
+flow. It is an access barrier for a trusted local network, not strong
+protection against a hostile peer that can observe and attack the traffic.
+The receiver runs as the logged-in user and is not a security sandbox.
+Unknown vulnerabilities in its C parsers or media dependencies can still
+affect that user. Wireless services also remain susceptible to some forms
+of network denial of service. Keep dependency updates and regression tests
+part of subsequent releases.
+
+One specific availability limitation remains in the upstream control
+server (UxPlay lib/httpd.c). Its initial receive loop waits for an
+eight-byte prefix and retries when a peer stalls before that prefix is
+complete. A stalled or malicious unauthenticated peer can therefore
+monopolize request handling. This is an identified denial-of-service
+limitation, not an established data-disclosure or authentication-bypass
+issue. Stop/quit and the owned-child termination fallback remain available.
+It was left outside this version's focused parser changes and is another
+reason to restrict wireless use to a trusted local network.
+
+The mirrored iPad content, including any visible notifications, appears in
+the recording window. A recorder such as Loom handles that content under
+its own recording, upload, retention, and privacy behavior.
+
+The app is locally ad-hoc signed. Developer ID signing, hardened-runtime
+compatibility, and notarization are separate work for a public downloadable
+Mac application. License compliance and complete corresponding source for
+distributed third-party components are separate distribution requirements;
+this review is not legal advice or a license audit.
+
+For source publication, use only the prepared source folder/archive.
+Exclude the surrounding workspace, downloaded packages, test screenshots,
+runtime caches, logs, build products, and existing Git history. Choose
+the intended Git author name/email before committing; GitHub profile and
+commit metadata can identify an author independently of clean source code.
+
+Primary references checked
+---------------------------
+UxPlay usage, authentication behavior, and changelog:
+https://github.com/FDH2/UxPlay
+GStreamer security advisories:
+https://gstreamer.freedesktop.org/security/
+OpenSSL September 2026 security fixes:
+https://openssl-library.org/news/secadv/20260929.txt
+libplist published advisory listing:
+https://github.com/libimobiledevice/libplist/security/advisories

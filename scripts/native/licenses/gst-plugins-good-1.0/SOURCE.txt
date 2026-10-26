@@ -1,0 +1,4 @@
+GStreamer Good Plug-ins 1.28.8
+Required by the retained libgstosxvideo.dylib fallback plugin.
+COPYING is unmodified from the pinned official source archive.
+See source-dependencies.json and CORRESPONDING-SOURCE.txt.

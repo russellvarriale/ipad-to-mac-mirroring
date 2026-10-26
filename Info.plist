@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleDisplayName</key>
+	<string>iPad to Mac Mirroring</string>
+	<key>CFBundleExecutable</key>
+	<string>iPadToMacMirroring</string>
+	<key>CFBundleIdentifier</key>
+	<string>local.ipad-to-mac-mirroring</string>
+	<key>CFBundleName</key>
+	<string>iPad to Mac Mirroring</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>2.2.0</string>
+	<key>CFBundleVersion</key>
+	<string>11</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.utilities</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSCameraUsageDescription</key>
+	<string>Show your USB-connected iPad screen in a Mac window for recording. macOS treats this screen feed as a camera source.</string>
+	<key>NSCameraUseContinuityCameraDeviceType</key>
+	<true/>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Receive your iPad screen over your local Wi-Fi network after you start wireless mirroring.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_airplay._tcp</string>
+		<string>_raop._tcp</string>
+	</array>
+	<key>NSHumanReadableCopyright</key>
+	<string>Copyright © 2026 Russell Varriale. Original app code: MIT. Receiver: GPL-3.0-or-later.</string>
+</dict>
+</plist>

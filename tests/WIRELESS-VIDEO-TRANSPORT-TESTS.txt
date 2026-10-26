@@ -1,0 +1,21 @@
+Wireless video transport focused regression checks
+=================================================
+Run from the project root:
+
+  python3 tests/run_video_transport_tests.py
+
+The runner compiles the current WirelessVideoTransport.swift with the test
+harness and a tiny local C subprocess fixture. A temporary directory holds
+all generated sources, compiler caches, and binaries and is removed on exit.
+It does not launch the app, listen on a network, access an iPad, or record video.
+
+Result: 94 checks passed.
+
+Coverage includes every packet split, one-byte fragmentation, exact 16 MiB
+payload acceptance, invalid magic/kind/reserved/length rejection, oversized
+length rejection before allocation, truncated EOF, synchronous consumer
+rejection, reset-flood work limits, real socket delivery and EOF, expected
+Stop suppression, and Process.standardInput duplication to child fd 0.
+
+These focused framing and IPC checks do not establish end-to-end AirPlay,
+video-decoder, UI, or recording behavior.

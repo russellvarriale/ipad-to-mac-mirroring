@@ -1,0 +1,1990 @@
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -59,8 +59,16 @@
+      message ( STATUS "define GST_MACOS" )
+ endif()
+ 
+-add_executable( uxplay uxplay.cpp )
++add_executable( uxplay uxplay.cpp embedded_video.cpp )
+ target_link_libraries( uxplay renderers airplay )
++if (APPLE)
++    enable_language(OBJC)
++    # Preserve the caller's source/debug prefix maps in the small AppKit bridge.
++    set(CMAKE_OBJC_FLAGS "${CMAKE_OBJC_FLAGS} ${CMAKE_C_FLAGS}")
++    target_sources(uxplay PRIVATE macos_presentation.m)
++    target_compile_options(uxplay PRIVATE "$<$<COMPILE_LANGUAGE:OBJC>:-fobjc-arc>")
++    target_link_libraries(uxplay "-framework AppKit")
++endif()
+ if (DBUS_FOUND)
+       target_link_libraries( uxplay ${DBUS_LIBRARY})
+ endif()
+--- a/embedded_video.cpp
++++ b/embedded_video.cpp
+@@ -0,0 +1,122 @@
++/* Private, bounded H264 transport to the iPad to Mac Mirroring parent process.
++ * GPL-3.0-or-later, under the terms of this UxPlay integration. */
++#include "embedded_video.h"
++#include <chrono>
++#include <cerrno>
++#include <cstdint>
++#include <cstring>
++#include <mutex>
++#include <fcntl.h>
++#include <poll.h>
++#include <sys/socket.h>
++#include <sys/un.h>
++#include <unistd.h>
++
++namespace {
++constexpr int video_fd = STDIN_FILENO;
++constexpr int packet_deadline_ms = 2000;
++std::mutex writer_mutex;
++bool initialized = false; // Initialized before any callbacks/watchdog are started.
++
++[[noreturn]] void fail_transport() {
++    // Do not block on a log pipe while trying to close network listeners.
++    _exit(1);
++}
++
++void write_be32(unsigned char *destination, uint32_t value) {
++    destination[0] = static_cast<unsigned char>(value >> 24);
++    destination[1] = static_cast<unsigned char>(value >> 16);
++    destination[2] = static_cast<unsigned char>(value >> 8);
++    destination[3] = static_cast<unsigned char>(value);
++}
++
++void send_bytes(const unsigned char *data, size_t length,
++                const std::chrono::steady_clock::time_point deadline) {
++    while (length) {
++        auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
++            deadline - std::chrono::steady_clock::now()).count();
++        if (remaining <= 0) fail_transport();
++        struct pollfd descriptor = { video_fd, POLLOUT, 0 };
++        int ready = poll(&descriptor, 1, static_cast<int>(remaining));
++        if (ready < 0 && errno == EINTR) continue;
++        if (ready <= 0 || (descriptor.revents & (POLLERR | POLLHUP | POLLNVAL))) fail_transport();
++        if (!(descriptor.revents & POLLOUT)) continue;
++        ssize_t sent = send(video_fd, data, length, MSG_NOSIGNAL);
++        if (sent < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)) continue;
++        if (sent <= 0) fail_transport();
++        data += sent;
++        length -= static_cast<size_t>(sent);
++    }
++}
++
++void send_packet(uint32_t kind, const unsigned char *data, size_t length) {
++    std::lock_guard<std::mutex> guard(writer_mutex);
++    if (!initialized || length > IPAD_WINDOW_VIDEO_MAX_ACCESS_UNIT) fail_transport();
++    unsigned char header[16] = { 'I', 'W', 'V', '1' };
++    write_be32(header + 4, kind);
++    write_be32(header + 8, static_cast<uint32_t>(length));
++    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(packet_deadline_ms);
++    send_bytes(header, sizeof(header), deadline);
++    if (length) send_bytes(data, length, deadline);
++}
++}
++
++int ipad_window_video_initialize(void) {
++    if (initialized) return -1;
++    int type = 0;
++    socklen_t type_length = sizeof(type);
++    struct sockaddr_storage address = {};
++    socklen_t address_length = sizeof(address);
++    if (getsockopt(video_fd, SOL_SOCKET, SO_TYPE, &type, &type_length) || type != SOCK_STREAM ||
++        getsockname(video_fd, reinterpret_cast<struct sockaddr *>(&address), &address_length) ||
++        address.ss_family != AF_UNIX) return -1;
++#ifdef __APPLE__
++    uid_t peer_uid = 0;
++    gid_t peer_gid = 0;
++    if (getpeereid(video_fd, &peer_uid, &peer_gid) || peer_uid != geteuid()) return -1;
++    pid_t peer_pid = 0;
++    socklen_t pid_length = sizeof(peer_pid);
++    if (getsockopt(video_fd, SOL_LOCAL, LOCAL_PEERPID, &peer_pid, &pid_length) == 0) {
++        if (pid_length != sizeof(peer_pid) || peer_pid != getppid()) return -1;
++    } else if (errno != ENOPROTOOPT && errno != ENOTSUP && errno != EINVAL) {
++        return -1;
++    }
++    int no_sigpipe = 1;
++    if (setsockopt(video_fd, SOL_SOCKET, SO_NOSIGPIPE, &no_sigpipe, sizeof(no_sigpipe))) return -1;
++#else
++    return -1; // This bundled transport contract is macOS-only.
++#endif
++    int flags = fcntl(video_fd, F_GETFL);
++    int descriptor_flags = fcntl(video_fd, F_GETFD);
++    if (flags < 0 || descriptor_flags < 0 ||
++        fcntl(video_fd, F_SETFL, flags | O_NONBLOCK) < 0 ||
++        fcntl(video_fd, F_SETFD, descriptor_flags | FD_CLOEXEC) < 0) return -1;
++    initialized = true;
++    return 0;
++}
++
++int ipad_window_video_peer_alive(void) {
++    if (!initialized) return 0;
++    struct pollfd descriptor = { video_fd, POLLIN, 0 };
++    int ready = poll(&descriptor, 1, 0);
++    if (ready < 0) return errno == EINTR;
++    if (descriptor.revents & (POLLERR | POLLHUP | POLLNVAL)) return 0;
++    if (descriptor.revents & POLLIN) {
++        unsigned char byte;
++        ssize_t count = recv(video_fd, &byte, 1, MSG_PEEK | MSG_DONTWAIT);
++        // This channel is child-to-parent only; incoming data is not a command.
++        return count < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR);
++    }
++    return 1;
++}
++
++void ipad_window_video_reset(void) {
++    send_packet(2, nullptr, 0);
++}
++
++void ipad_window_video_access_unit(const unsigned char *data, size_t length) {
++    static const unsigned char start_code[] = {0, 0, 0, 1};
++    if (!data || length < 5 || length > IPAD_WINDOW_VIDEO_MAX_ACCESS_UNIT ||
++        memcmp(data, start_code, sizeof(start_code)) || (data[4] & 0x80)) fail_transport();
++    send_packet(1, data, length);
++}
+--- a/embedded_video.h
++++ b/embedded_video.h
+@@ -0,0 +1,17 @@
++/* Private, bounded H264 transport to the iPad to Mac Mirroring parent process.
++ * GPL-3.0-or-later, under the terms of this UxPlay integration. */
++#ifndef IPAD_WINDOW_EMBEDDED_VIDEO_H
++#define IPAD_WINDOW_EMBEDDED_VIDEO_H
++#include <stddef.h>
++#ifdef __cplusplus
++extern "C" {
++#endif
++#define IPAD_WINDOW_VIDEO_MAX_ACCESS_UNIT (16u * 1024u * 1024u)
++int ipad_window_video_initialize(void);
++int ipad_window_video_peer_alive(void);
++void ipad_window_video_reset(void);
++void ipad_window_video_access_unit(const unsigned char *data, size_t length);
++#ifdef __cplusplus
++}
++#endif
++#endif
+--- a/lib/CMakeLists.txt
++++ b/lib/CMakeLists.txt
+@@ -40,13 +40,6 @@
+ endif()
+ 
+ if( APPLE )
+-  set( ENV{PKG_CONFIG_PATH} "/usr/local/lib/pkgconfig" ) # standard location, and Brew
+-  set( ENV{PKG_CONFIG_PATH} "$ENV{PKG_CONFIG_PATH}:/opt/homebrew/lib/pkgconfig" ) # Brew for M1 macs
+-  set( ENV{PKG_CONFIG_PATH} "$ENV{PKG_CONFIG_PATH}:$ENV{HOMEBREW_PREFIX}/lib/pkgconfig" ) # Brew using prefix
+-  set( ENV{PKG_CONFIG_PATH} "$ENV{PKG_CONFIG_PATH}:/opt/local/lib/pkgconfig/" ) # MacPorts
+-  set( ENV{PKG_CONFIG_PATH} "$ENV{PKG_CONFIG_PATH}:/usr/local/opt/openssl@3/lib/pkgconfig" ) # Brew openssl
+-  set( ENV{PKG_CONFIG_PATH} "$ENV{PKG_CONFIG_PATH}:/opt/homebrew/opt/openssl@3/lib/pkgconfig" ) # Brew M1 openssl
+-  set( ENV{PKG_CONFIG_PATH} "$ENV{PKG_CONFIG_PATH}:$ENV{HOMEBREW_PREFIX}/opt/openssl@3/lib/pkgconfig" ) # Brew using prefix  openssl
+   message( "PKG_CONFIG_PATH (Apple, lib) = " $ENV{PKG_CONFIG_PATH} )
+   find_program( PKG_CONFIG_EXECUTABLE  pkg-config  PATHS /Library/FrameWorks/GStreamer.framework/Commands )
+   message( "PKG_CONFIG_EXECUTABLE " ${PKG_CONFIG_EXECUTABLE} )
+--- a/lib/byteutils.c
++++ b/lib/byteutils.c
+@@ -19,6 +19,7 @@
+ #define SECOND_IN_NSECS 1000000000UL
+ 
+ #include <time.h>
++#include <string.h>
+ #ifdef _WIN32
+ # include <winsock2.h>
+ #else
+@@ -52,21 +53,27 @@
+  * Reads a little endian unsigned 16 bit integer from the buffer at position offset
+  */
+ uint16_t byteutils_get_short(unsigned char* b, int offset) {
+-    return *((uint16_t*)(b + offset));
++    uint16_t value;
++    memcpy(&value, b + offset, sizeof(value));
++    return value;
+ }
+ 
+ /**
+  * Reads a little endian unsigned 32 bit integer from the buffer at position offset
+  */
+ uint32_t byteutils_get_int(unsigned char* b, int offset) {
+-    return *((uint32_t*)(b + offset));
++    uint32_t value;
++    memcpy(&value, b + offset, sizeof(value));
++    return value;
+ }
+ 
+ /**
+  * Reads a little endian unsigned 64 bit integer from the buffer at position offset
+  */
+ uint64_t byteutils_get_long(unsigned char* b, int offset) {
+-    return *((uint64_t*)(b + offset));
++    uint64_t value;
++    memcpy(&value, b + offset, sizeof(value));
++    return value;
+ }
+ 
+ /**
+@@ -93,21 +100,24 @@
+  * Writes a big endian unsigned 64 bit integer to the buffer at position offset
+  */
+ void byteutils_put_long_be(unsigned char* b, int offset, uint64_t value) {
+-    *((uint64_t*)(b + offset)) = htonll(value);
++    value = htonll(value);
++    memcpy(b + offset, &value, sizeof(value));
+ }
+ 
+ /**
+  * Reads a float from the buffer at position offset
+  */
+ float byteutils_get_float(unsigned char* b, int offset) {
+-    return *((float*)(b + offset));
++    float value;
++    memcpy(&value, b + offset, sizeof(value));
++    return value;
+ }
+ 
+ /**
+  * Writes a little endian unsigned 32 bit integer to the buffer at position offset
+  */
+ void byteutils_put_int(unsigned char* b, int offset, uint32_t value) {
+-    *((uint32_t*)(b + offset)) = value;
++    memcpy(b + offset, &value, sizeof(value));
+ }
+ 
+ /**
+--- a/lib/crypto.c
++++ b/lib/crypto.c
+@@ -242,26 +242,27 @@
+     }
+ }
+ 
+-void x25519_derive_secret(unsigned char secret[X25519_KEY_SIZE], const x25519_key_t *ours, const x25519_key_t *theirs) {
+-    EVP_PKEY_CTX *pctx;
+-
+-    assert(ours);
+-    assert(theirs);
+-
+-    pctx = EVP_PKEY_CTX_new(ours->pkey, NULL);
+-    if (!pctx) {
+-        handle_error(__func__);
+-    }
+-    if (!EVP_PKEY_derive_init(pctx)) {
+-        handle_error(__func__);
+-    }
+-    if (!EVP_PKEY_derive_set_peer(pctx, theirs->pkey)) {
+-        handle_error(__func__);
+-    }
+-    if (!EVP_PKEY_derive(pctx, secret, &(size_t) {X25519_KEY_SIZE})) {
+-        handle_error(__func__);
++int x25519_derive_secret(unsigned char secret[X25519_KEY_SIZE], const x25519_key_t *ours, const x25519_key_t *theirs) {
++    /* A network peer can supply a low-order public key. Reject it as input;
++     * do not terminate the receiver through the generic crypto error handler. */
++    if (!secret) return -1;
++    memset(secret, 0, X25519_KEY_SIZE);
++    if (!ours || !theirs || !ours->pkey || !theirs->pkey) return -1;
++    EVP_PKEY_CTX *pctx = EVP_PKEY_CTX_new(ours->pkey, NULL);
++    if (!pctx) return -1;
++    size_t length = X25519_KEY_SIZE;
++    int result = -1;
++    if (EVP_PKEY_derive_init(pctx) > 0 &&
++        EVP_PKEY_derive_set_peer(pctx, theirs->pkey) > 0 &&
++        EVP_PKEY_derive(pctx, secret, &length) > 0 && length == X25519_KEY_SIZE) {
++        result = 0;
+     }
+     EVP_PKEY_CTX_free(pctx);
++    if (result) {
++        memset(secret, 0, X25519_KEY_SIZE);
++        ERR_clear_error();
++    }
++    return result;
+ }
+ 
+ // GCM AES 128
+--- a/lib/crypto.h
++++ b/lib/crypto.h
+@@ -69,7 +69,8 @@
+ int get_random_bytes(unsigned char *buf, int num);
+ void pk_to_base64(const unsigned char *pk, int pk_len, char *pk_base64, int len);
+   
+-void x25519_derive_secret(unsigned char secret[X25519_KEY_SIZE], const x25519_key_t *ours, const x25519_key_t *theirs);
++/* Returns 0 on success, -1 on an invalid peer key or derivation failure. */
++int x25519_derive_secret(unsigned char secret[X25519_KEY_SIZE], const x25519_key_t *ours, const x25519_key_t *theirs);
+ 
+ // GCM AES 128
+ 
+--- a/lib/dnssd.c
++++ b/lib/dnssd.c
+@@ -27,6 +27,9 @@
+ #include <string.h>
+ #include <stdio.h>
+ #include <assert.h>
++#ifdef __APPLE__
++#include <dispatch/dispatch.h>
++#endif
+ 
+ #ifdef HAVE_CONFIG_H
+ #include "config.h"
+@@ -152,7 +155,59 @@
+     uint32_t features2;
+ 
+     unsigned char pin_pw;
++#ifdef __APPLE__
++    dispatch_queue_t registration_queue;
++    dnssd_status_callback_t status_callback;
++    void *status_context;
++    unsigned int ready_mask;
++    int status_reported;
++#endif
+ };
++
++#ifdef __APPLE__
++/* All registration state and callbacks live on this serial queue. Deallocation
++ * drains pending callbacks before releasing their context, as dns_sd.h requires. */
++static void dnssd_status(dnssd_t *dnssd, int error)
++{
++    if (dnssd->status_reported || (!error && dnssd->ready_mask != 3)) return;
++    dnssd->status_reported = 1;
++    if (dnssd->status_callback) dnssd->status_callback(dnssd->status_context, error);
++}
++
++static void DNSSD_STDCALL dnssd_registered(DNSServiceRef service, DNSServiceFlags flags,
++        DNSServiceErrorType error, const char *name, const char *type,
++        const char *domain, void *context)
++{
++    dnssd_t *dnssd = context;
++    (void) flags; (void) name; (void) type; (void) domain;
++    if (error) {
++        /* Registration may fail even after its initial successful callback. */
++        dnssd->status_reported = 0;
++        dnssd_status(dnssd, error);
++        return;
++    }
++    if (service == dnssd->raop_service) dnssd->ready_mask |= 1;
++    if (service == dnssd->airplay_service) dnssd->ready_mask |= 2;
++    dnssd_status(dnssd, 0);
++}
++
++struct dnssd_registration_request {
++    dnssd_t *dnssd;
++    unsigned short port;
++    int result;
++};
++#endif
++
++void dnssd_set_status_callback(dnssd_t *dnssd, dnssd_status_callback_t callback, void *context)
++{
++#ifdef __APPLE__
++    /* Called once before registration, while the queue has no callbacks. */
++    dnssd->status_callback = callback;
++    dnssd->status_context = context;
++#else
++    (void) dnssd; (void) callback; (void) context;
++#endif
++}
+ 
+ 
+ 
+@@ -266,7 +321,16 @@
+     }
+ 
+     memcpy(dnssd->hw_addr, hw_addr, hw_addr_len);
+-
++#ifdef __APPLE__
++    dnssd->registration_queue = dispatch_queue_create("org.ipadwindow.bonjour", DISPATCH_QUEUE_SERIAL);
++    if (!dnssd->registration_queue) {
++        free(dnssd->hw_addr);
++        free(dnssd->name);
++        free(dnssd);
++        if (error) *error = DNSSD_ERROR_OUTOFMEM;
++        return NULL;
++    }
++#endif
+     return dnssd;
+ }
+ 
+@@ -274,6 +338,13 @@
+ dnssd_destroy(dnssd_t *dnssd)
+ {
+     if (dnssd) {
++        dnssd_unregister_raop(dnssd);
++        dnssd_unregister_airplay(dnssd);
++#ifdef __APPLE__
++        dispatch_release(dnssd->registration_queue);
++#endif
++        free(dnssd->name);
++        free(dnssd->hw_addr);
+ #ifdef WIN32
+         FreeLibrary(dnssd->module);
+ #elif USE_LIBDL
+@@ -283,8 +354,8 @@
+     }
+ }
+ 
+-int
+-dnssd_register_raop(dnssd_t *dnssd, unsigned short port)
++static int
++dnssd_register_raop_on_queue(dnssd_t *dnssd, unsigned short port)
+ {
+     char servname[MAX_SERVNAME];
+ 
+@@ -351,13 +422,17 @@
+                                                           htons(port),
+                                                           dnssd->TXTRecordGetLength(&dnssd->raop_record),
+                                                           dnssd->TXTRecordGetBytesPtr(&dnssd->raop_record),
++#ifdef __APPLE__
++                                                          dnssd_registered, dnssd);
++    if (!retval) retval = DNSServiceSetDispatchQueue(dnssd->raop_service, dnssd->registration_queue);
++#else
+                                                           NULL, NULL);
+-
++#endif
+     return (int) retval;   /* error codes are listed in Apple's dns_sd.h */
+ }
+ 
+-int
+-dnssd_register_airplay(dnssd_t *dnssd, unsigned short port)
++static int
++dnssd_register_airplay_on_queue(dnssd_t *dnssd, unsigned short port)
+ {
+     char device_id[3 * MAX_HWADDR_LEN];
+     char features[22] = {0};
+@@ -404,9 +479,51 @@
+                                                            htons(port),
+                                                            dnssd->TXTRecordGetLength(&dnssd->airplay_record),
+                                                            dnssd->TXTRecordGetBytesPtr(&dnssd->airplay_record),
++#ifdef __APPLE__
++                                                           dnssd_registered, dnssd);
++    if (!retval) retval = DNSServiceSetDispatchQueue(dnssd->airplay_service, dnssd->registration_queue);
++#else
+                                                            NULL, NULL);
+-
++#endif
+     return (int) retval;   /* error codes are listed in Apple's dns_sd.h */
++}
++
++#ifdef __APPLE__
++static void dnssd_register_raop_work(void *context)
++{
++    struct dnssd_registration_request *request = context;
++    request->result = dnssd_register_raop_on_queue(request->dnssd, request->port);
++    if (request->result) dnssd_status(request->dnssd, request->result);
++}
++
++static void dnssd_register_airplay_work(void *context)
++{
++    struct dnssd_registration_request *request = context;
++    request->result = dnssd_register_airplay_on_queue(request->dnssd, request->port);
++    if (request->result) dnssd_status(request->dnssd, request->result);
++}
++#endif
++
++int dnssd_register_raop(dnssd_t *dnssd, unsigned short port)
++{
++#ifdef __APPLE__
++    struct dnssd_registration_request request = { dnssd, port, 0 };
++    dispatch_sync_f(dnssd->registration_queue, &request, dnssd_register_raop_work);
++    return request.result;
++#else
++    return dnssd_register_raop_on_queue(dnssd, port);
++#endif
++}
++
++int dnssd_register_airplay(dnssd_t *dnssd, unsigned short port)
++{
++#ifdef __APPLE__
++    struct dnssd_registration_request request = { dnssd, port, 0 };
++    dispatch_sync_f(dnssd->registration_queue, &request, dnssd_register_airplay_work);
++    return request.result;
++#else
++    return dnssd_register_airplay_on_queue(dnssd, port);
++#endif
+ }
+ 
+ const char *
+@@ -437,9 +554,10 @@
+     return dnssd->hw_addr;
+ }
+ 
+-void
+-dnssd_unregister_raop(dnssd_t *dnssd)
+-{
++static void
++dnssd_unregister_raop_work(void *context)
++{
++    dnssd_t *dnssd = context;
+     assert(dnssd);
+ 
+     if (!dnssd->raop_service) {
+@@ -452,15 +570,13 @@
+     dnssd->DNSServiceRefDeallocate(dnssd->raop_service);
+     dnssd->raop_service = NULL;
+ 
+-    if (dnssd->airplay_service == NULL) {
+-        free(dnssd->name);
+-        free(dnssd->hw_addr);
+-    }
+-}
+-
+-void
+-dnssd_unregister_airplay(dnssd_t *dnssd)
+-{
++
++}
++
++static void
++dnssd_unregister_airplay_work(void *context)
++{
++    dnssd_t *dnssd = context;
+     assert(dnssd);
+ 
+     if (!dnssd->airplay_service) {
+@@ -473,10 +589,25 @@
+     dnssd->DNSServiceRefDeallocate(dnssd->airplay_service);
+     dnssd->airplay_service = NULL;
+ 
+-    if (dnssd->raop_service == NULL) {
+-        free(dnssd->name);
+-        free(dnssd->hw_addr);
+-    }
++
++}
++
++void dnssd_unregister_raop(dnssd_t *dnssd)
++{
++#ifdef __APPLE__
++    dispatch_sync_f(dnssd->registration_queue, dnssd, dnssd_unregister_raop_work);
++#else
++    dnssd_unregister_raop_work(dnssd);
++#endif
++}
++
++void dnssd_unregister_airplay(dnssd_t *dnssd)
++{
++#ifdef __APPLE__
++    dispatch_sync_f(dnssd->registration_queue, dnssd, dnssd_unregister_airplay_work);
++#else
++    dnssd_unregister_airplay_work(dnssd);
++#endif
+ }
+ 
+ uint64_t dnssd_get_airplay_features(dnssd_t *dnssd) {
+--- a/lib/dnssd.h
++++ b/lib/dnssd.h
+@@ -33,6 +33,10 @@
+ 
+ typedef struct dnssd_s dnssd_t;
+ 
++/* On macOS, error=0 means both Bonjour registrations completed. */
++typedef void (*dnssd_status_callback_t)(void *context, int error);
++DNSSD_API void dnssd_set_status_callback(dnssd_t *dnssd, dnssd_status_callback_t callback, void *context);
++
+ DNSSD_API dnssd_t *dnssd_init(const char *name, int name_len, const char *hw_addr, int hw_addr_len, int *error, unsigned char pin_pw);
+ 
+ DNSSD_API int dnssd_register_raop(dnssd_t *dnssd, unsigned short port);
+--- a/lib/http_handlers.h
++++ b/lib/http_handlers.h
+@@ -628,7 +628,7 @@
+         fcup_response_data = plist_get_data_ptr(req_params_fcup_response_data_node, &uint_val);
+ #else
+         char *fcup_response_data = NULL;       
+-        fcup_response_data = plist_get_data_val(req_params_fcup_response_data_node, &fcup_response_data, &uint_val);
++        plist_get_data_val(req_params_fcup_response_data_node, &fcup_response_data, &uint_val);
+ #endif
+         fcup_response_datalen = (int) uint_val;
+         char *playlist = NULL;
+--- a/lib/http_request.c
++++ b/lib/http_request.c
+@@ -31,6 +31,8 @@
+     const char *method;
+     char *url;
+     char protocol[9];
++    size_t protocol_len;
++    size_t header_bytes;
+ 
+     char **headers;
+     int headers_size;
+@@ -42,27 +44,78 @@
+     int complete;
+ };
+ 
++/* Bound unauthenticated requests before any growing allocation. */
++#define MAX_REQUEST_URL (8U * 1024U)
++#define MAX_REQUEST_HEADERS (32U * 1024U)
++#define MAX_REQUEST_BODY (1024U * 1024U)
++
++static int
++request_error(llhttp_t *parser, const char *reason)
++{
++    llhttp_set_error_reason(parser, reason);
++    return -1;
++}
++
++static int
++append_text(llhttp_t *parser, char **target, const char *at, size_t length,
++            size_t limit)
++{
++    size_t used = *target ? strlen(*target) : 0;
++    if (used > limit || length > limit - used) {
++        return request_error(parser, "Request field exceeds local limit");
++    }
++    char *next = realloc(*target, used + length + 1);
++    if (!next) return request_error(parser, "Request allocation failed");
++    memcpy(next + used, at, length);
++    next[used + length] = '\0';
++    *target = next;
++    return 0;
++}
++
++static int
++on_protocol_part(llhttp_t *parser, const char *at, size_t length)
++{
++    http_request_t *request = parser->data;
++    if (length > sizeof(request->protocol) - 1 - request->protocol_len) {
++        return request_error(parser, "Invalid request protocol");
++    }
++    memcpy(request->protocol + request->protocol_len, at, length);
++    request->protocol_len += length;
++    request->protocol[request->protocol_len] = '\0';
++    return 0;
++}
++
++static int
++on_protocol_complete(llhttp_t *parser)
++{
++    return on_protocol_part(parser, "/", 1);
++}
++
++static int
++on_headers_complete(llhttp_t *parser)
++{
++    if (parser->content_length != UINT64_MAX && parser->content_length > MAX_REQUEST_BODY) {
++        return request_error(parser, "Request body exceeds local limit");
++    }
++    return 0;
++}
++
+ static int
+ on_url(llhttp_t *parser, const char *at, size_t length)
+ {
+     http_request_t *request = parser->data;
+-    int urllen = request->url ? strlen(request->url) : 0;
+-
+-    request->url = realloc(request->url, urllen+length+1);
+-    assert(request->url);
+-
+-    request->url[urllen] = '\0';
+-    strncat(request->url, at, length);
+-
+-    strncpy(request->protocol, at + length + 1, 8);
+-
+-    return 0;
++    return append_text(parser, &request->url, at, length, MAX_REQUEST_URL);
+ }
+ 
+ static int
+ on_header_field(llhttp_t *parser, const char *at, size_t length)
+ {
+     http_request_t *request = parser->data;
++
++    if (length > MAX_REQUEST_HEADERS - request->header_bytes) {
++        return request_error(parser, "Request headers exceed local limit");
++    }
++    request->header_bytes += length;
+ 
+     /* Check if our index is a value */
+     if (request->headers_index%2 == 1) {
+@@ -72,51 +125,37 @@
+     /* Allocate space for new field-value pair */
+     if (request->headers_index == request->headers_size) {
+         request->headers_size += 2;
+-        request->headers = realloc(request->headers,
+-                                   request->headers_size*sizeof(char*));
+-        assert(request->headers);
++        char **next = realloc(request->headers, request->headers_size*sizeof(char*));
++        if (!next) {
++            request->headers_size -= 2;
++            return request_error(parser, "Request allocation failed");
++        }
++        request->headers = next;
+         request->headers[request->headers_index] = NULL;
+         request->headers[request->headers_index+1] = NULL;
+     }
+ 
+-    /* Allocate space in the current header string */
+-    if (request->headers[request->headers_index] == NULL) {
+-        request->headers[request->headers_index] = calloc(1, length + 1);
+-    } else {
+-        request->headers[request->headers_index] = realloc(
+-                request->headers[request->headers_index],
+-                strlen(request->headers[request->headers_index]) + length + 1
+-        );
+-    }
+-    assert(request->headers[request->headers_index]);
+-
+-    strncat(request->headers[request->headers_index], at, length);
+-    return 0;
++    return append_text(parser, &request->headers[request->headers_index], at, length,
++                       MAX_REQUEST_HEADERS);
+ }
+ 
+ static int
+ on_header_value(llhttp_t *parser, const char *at, size_t length)
+ {
+     http_request_t *request = parser->data;
++
++    if (length > MAX_REQUEST_HEADERS - request->header_bytes) {
++        return request_error(parser, "Request headers exceed local limit");
++    }
++    request->header_bytes += length;
+ 
+     /* Check if our index is a field */
+     if (request->headers_index%2 == 0) {
+         request->headers_index++;
+     }
+ 
+-    /* Allocate space in the current header string */
+-    if (request->headers[request->headers_index] == NULL) {
+-        request->headers[request->headers_index] = calloc(1, length + 1);
+-    } else {
+-        request->headers[request->headers_index] = realloc(
+-                request->headers[request->headers_index],
+-                strlen(request->headers[request->headers_index]) + length + 1
+-        );
+-    }
+-    assert(request->headers[request->headers_index]);
+-
+-    strncat(request->headers[request->headers_index], at, length);
+-    return 0;
++    return append_text(parser, &request->headers[request->headers_index], at, length,
++                       MAX_REQUEST_HEADERS);
+ }
+ 
+ static int
+@@ -124,8 +163,13 @@
+ {
+     http_request_t *request = parser->data;
+ 
+-    request->data = realloc(request->data, request->datalen + length);
+-    assert(request->data);
++    if (length > MAX_REQUEST_BODY - (size_t) request->datalen) {
++        return request_error(parser, "Request body exceeds local limit");
++    }
++    if (!length) return 0;
++    char *next = realloc(request->data, request->datalen + length);
++    if (!next) return request_error(parser, "Request allocation failed");
++    request->data = next;
+ 
+     memcpy(request->data+request->datalen, at, length);
+     request->datalen += length;
+@@ -152,6 +196,10 @@
+ 
+     llhttp_settings_init(&request->parser_settings);
+     request->parser_settings.on_url = &on_url;
++    request->parser_settings.on_protocol = &on_protocol_part;
++    request->parser_settings.on_protocol_complete = &on_protocol_complete;
++    request->parser_settings.on_version = &on_protocol_part;
++    request->parser_settings.on_headers_complete = &on_headers_complete;
+     request->parser_settings.on_header_field = &on_header_field;
+     request->parser_settings.on_header_value = &on_header_value;
+     request->parser_settings.on_body = &on_body;
+--- a/lib/pairing.c
++++ b/lib/pairing.c
+@@ -34,6 +34,7 @@
+     unsigned char verifier[SRP_VERIFIER_SIZE];
+     unsigned char session_key[SRP_SESSION_KEY_SIZE];
+     unsigned char private_key[SRP_PRIVATE_KEY_SIZE];
++    bool proof_validated;
+ } srp_t;
+ 
+ struct pairing_s {
+@@ -162,18 +163,33 @@
+ pairing_session_handshake(pairing_session_t *session, const unsigned char ecdh_key[X25519_KEY_SIZE],
+                           const unsigned char ed_key[ED25519_KEY_SIZE])
+ {
+-    assert(session);
+-
+-    if (session->status == STATUS_FINISHED) {
+-        return -1;
+-    }
++    if (!session || !ecdh_key || !ed_key || session->status == STATUS_FINISHED) return -1;
++
++    /* A malformed peer key must not terminate the receiver or leave a previous
++     * handshake's keys/status available to later requests on this connection. */
++    x25519_key_destroy(session->ecdh_theirs);
++    x25519_key_destroy(session->ecdh_ours);
++    ed25519_key_destroy(session->ed_theirs);
++    session->ecdh_theirs = NULL;
++    session->ecdh_ours = NULL;
++    session->ed_theirs = NULL;
++    memset(session->ecdh_secret, 0, sizeof(session->ecdh_secret));
++    session->status = STATUS_SETUP;
+ 
+     session->ecdh_theirs = x25519_key_from_raw(ecdh_key);
+     session->ed_theirs = ed25519_key_from_raw(ed_key);
+-
+     session->ecdh_ours = x25519_key_generate();
+-
+-    x25519_derive_secret(session->ecdh_secret, session->ecdh_ours, session->ecdh_theirs);
++    if (!session->ecdh_theirs || !session->ed_theirs || !session->ecdh_ours ||
++        x25519_derive_secret(session->ecdh_secret, session->ecdh_ours, session->ecdh_theirs)) {
++        x25519_key_destroy(session->ecdh_theirs);
++        x25519_key_destroy(session->ecdh_ours);
++        ed25519_key_destroy(session->ed_theirs);
++        session->ecdh_theirs = NULL;
++        session->ecdh_ours = NULL;
++        session->ed_theirs = NULL;
++        memset(session->ecdh_secret, 0, sizeof(session->ecdh_secret));
++        return -1;
++    }
+ 
+     session->status = STATUS_HANDSHAKE;
+     return 0;
+@@ -243,6 +259,7 @@
+ bool
+ pairing_digest_verify(const char *method, const char * authorization, const char *password) {
+   /* RFC 2617 HTTP md5 Digest password authentication */
++    if (!method || !authorization || !password) return false;
+     size_t authlen = strlen(authorization);
+     char *sentence = (char *) malloc(authlen + 1);
+     if (!sentence) {
+@@ -296,6 +313,13 @@
+     }
+     response = get_token(&cursor, "response", '\"', '\"');
+ 
++    /* Malformed, unauthenticated Digest fields must fail closed. */
++    if (!username || !realm || !nonce || !uri || !response ||
++        (qop && (!nc || !cnonce))) {
++        free(sentence);
++        return false;
++    }
++
+ #ifdef test_digest
+     printf("username: [%s]  realm: [%s]\n", username, realm);
+     printf("nonce: [%s]\n", nonce);
+@@ -500,7 +524,8 @@
+ int
+ srp_new_user(pairing_session_t *session, pairing_t *pairing, const char *device_id, const char *pin,
+              const char **salt, int *len_salt, const char **pk, int *len_pk) {
+-    if (strlen(device_id) > SRP_USERNAME_SIZE) {
++    if (!session || !pairing || !device_id || !pin || !salt || !len_salt || !pk || !len_pk ||
++        strlen(device_id) > SRP_USERNAME_SIZE) {
+         return -1;
+     }
+ 
+@@ -555,6 +580,9 @@
+ int
+ srp_validate_proof(pairing_session_t *session, pairing_t *pairing, const unsigned char *A,
+                     int len_A, unsigned char *proof, int client_proof_len, int proof_len) {
++    if (!session || !session->srp || !pairing || !A || !proof || len_A <= 0 || len_A > 512 ||
++        client_proof_len != SRP_M2_SIZE || proof_len != SRP_M2_SIZE) return -1;
++    session->srp->proof_validated = false;
+     int authenticated  = 0;
+     const unsigned char *B =  NULL;
+     const unsigned char *b = session->srp->private_key;
+@@ -571,6 +599,7 @@
+                                                     b, len_b,
+                                                     &B, &len_B, NULL, NULL, 1);
+ 
++    if (!verifier) return -1;
+     srp_verifier_verify_session(verifier, proof, &M2);
+     authenticated = srp_verifier_is_authenticated(verifier);
+     if (authenticated == 0) {
+@@ -581,17 +610,21 @@
+         return -1;
+     }
+     session_key = srp_verifier_get_session_key(verifier, &len_K);
+-    if (len_K != SRP_SESSION_KEY_SIZE) {
++    if (!session_key || !M2 || len_K != SRP_SESSION_KEY_SIZE) {
++        srp_verifier_delete(verifier);
+         return -2;
+     }
+     memcpy(session->srp->session_key, session_key, len_K);
+     memcpy(proof, M2, proof_len);
++    session->srp->proof_validated = true;
+     srp_verifier_delete(verifier);
+     return 0;
+ }
+ int
+ srp_confirm_pair_setup(pairing_session_t *session, pairing_t *pairing,
+                        unsigned char *epk, unsigned char *auth_tag) {
++    if (!session || !session->srp || !session->srp->proof_validated || !pairing || !epk || !auth_tag)
++        return -1;
+     unsigned char aesKey[16] = {0}, aesIV[16] = {0};
+     unsigned char hash[SHA512_DIGEST_LENGTH] = {0};
+     unsigned char pk[ED25519_KEY_SIZE] = {0};
+@@ -620,9 +653,9 @@
+ 
+     /* decrypt client epk to authenticate client using auth_tag */
+     int pk_len_client  = gcm_decrypt(epk, ED25519_KEY_SIZE, pk, aesKey, aesIV, auth_tag);
+-    if (pk_len_client <= 0) {
+-       /* authentication failed */
+-         return pk_len_client;
++    if (pk_len_client != ED25519_KEY_SIZE) {
++        /* Zero-length output is an authentication failure, too. */
++        return -1;
+     }
+ 
+     /* success, from server viewpoint */
+@@ -635,7 +668,7 @@
+     /* encryption  needs this previously undocumented additional "nonce" */
+     aesIV[15]++;
+     int epk_len = gcm_encrypt(pk, ED25519_KEY_SIZE, epk, aesKey, aesIV, auth_tag);
+-    return epk_len;    
++    return epk_len == ED25519_KEY_SIZE ? epk_len : -1;
+ }
+ 
+ void get_pairing_session_client_data(pairing_session_t *session, char **username, char **client_pk64) {
+--- a/lib/raop.c
++++ b/lib/raop.c
+@@ -217,6 +217,29 @@
+     const char *protocol = http_request_get_protocol(request);
+ 
+     if (!method  || !url || !protocol) {
++        return;
++    }
++
++    /* Password-only mode does not use legacy SRP pairing. Reject those routes
++     * before parsing any body or invoking a handler with absent SRP state. */
++    if (!raop->use_pin && (!strcmp(url, "/pair-pin-start") || !strcmp(url, "/pair-setup-pin"))) {
++        *response = http_response_create();
++        http_response_init(*response, protocol, 403, "Legacy Pairing Disabled");
++        http_response_set_disconnect(*response, 1);
++        return;
++    }
++
++    /* iPad Window receives screen mirroring only. Never dispatch remote-URL/HLS
++     * playback, even when a client supplies a forged CSeq header. */
++    if (!strcmp(url, "/play") || !strcmp(url, "/action") ||
++        !strcmp(url, "/reverse") || !strcmp(url, "/stop") ||
++        !strcmp(url, "/server-info") || !strcmp(url, "/playback-info") ||
++        !strcmp(url, "/fp-setup2") || !strncmp(url, "/scrub?", 7) ||
++        !strncmp(url, "/rate?", 6) || !strncmp(url, "/getProperty?", 13) ||
++        !strncmp(url, "/setProperty?", 13)) {
++        *response = http_response_create();
++        http_response_init(*response, protocol, 403, "Mirroring Only");
++        http_response_set_disconnect(*response, 1);
+         return;
+     }
+ 
+--- a/lib/raop_handlers.h
++++ b/lib/raop_handlers.h
+@@ -261,6 +261,9 @@
+         pin_4 = random_pin();
+         if (pin_4 < 0) {
+             logger_log(raop->logger, LOGGER_ERR, "Failed to generate random pin");
++            http_response_init(response, "RTSP/1.0", 503, "Authentication unavailable");
++            http_response_set_disconnect(response, 1);
++            return;
+         } else {
+             raop->pin = (unsigned short) pin_4 % 10000;
+         }
+@@ -288,7 +291,7 @@
+         char *header_str= NULL; 
+         http_request_get_header_string(request, &header_str);
+         logger_log(raop->logger, LOGGER_INFO, "request header: %s", header_str);
+-        data_is_plist = (strstr(header_str,"apple-binary-plist") != NULL);
++        data_is_plist = (header_str && strstr(header_str,"apple-binary-plist") != NULL);
+         free(header_str);
+     }
+     if (!data_is_plist) {
+@@ -300,6 +303,10 @@
+     /* process the pair-setup-pin request */
+     plist_t req_root_node = NULL;
+     plist_from_bin(request_data, request_datalen, &req_root_node);
++    if (!PLIST_IS_DICT(req_root_node)) {
++        plist_free(req_root_node);
++        goto authentication_failed;
++    }
+     plist_t req_method_node = plist_dict_get_item(req_root_node, "method");
+     plist_t req_user_node = plist_dict_get_item(req_root_node, "user");
+     plist_t req_pk_node = plist_dict_get_item(req_root_node, "pk");
+@@ -316,7 +323,7 @@
+         char *method = NULL;
+         char *user = NULL;
+         plist_get_string_val(req_method_node, &method);
+-        if (strncmp(method, "pin", strlen (method))) {
++        if (!method || strcmp(method, "pin")) {
+             logger_log(raop->logger, LOGGER_ERR, "error, required method is \"pin\", client requested \"%s\"", method);
+             free (method);
+             plist_free (req_root_node);
+@@ -358,8 +365,12 @@
+         uint64_t client_proof_len = 0;
+         plist_get_data_val(req_pk_node, &client_pk, &client_pk_len); 
+         plist_get_data_val(req_proof_node, &client_proof, &client_proof_len);
+-        if (client_proof_len != sizeof(proof)) {
++        if (!client_pk || !client_proof || !client_pk_len || client_pk_len > 512 ||
++            client_proof_len != sizeof(proof)) {
+             logger_log(raop->logger, LOGGER_ERR, "Client Authentication Failure (client_proof_len %d invalid)", (int) client_proof_len);
++            free(client_pk);
++            free(client_proof);
++            plist_free(req_root_node);
+             goto authentication_failed;
+         }
+         if (logger_debug) {
+@@ -400,6 +411,13 @@
+         int ret = 0;
+         plist_get_data_val(req_epk_node, &client_epk, &client_epk_len); 
+         plist_get_data_val(req_authtag_node, &client_authtag, &client_authtag_len);
++        if (!client_epk || !client_authtag || client_epk_len != ED25519_KEY_SIZE ||
++            client_authtag_len != GCM_AUTHTAG_SIZE) {
++            free(client_epk);
++            free(client_authtag);
++            plist_free(req_root_node);
++            goto authentication_failed;
++        }
+ 
+         if (logger_debug) {
+             char *str = utils_data_to_string((const unsigned char *) client_epk, client_epk_len, 16);
+@@ -432,6 +450,7 @@
+         http_response_add_header(response, "Content-Type", "application/x-apple-binary-plist");
+         return;
+     }
++    plist_free(req_root_node);
+  authentication_failed:;
+     http_response_init(response, "RTSP/1.0", 470, "Client Authentication Failure");
+ }
+@@ -476,34 +495,36 @@
+             pairing_session_set_setup_status(conn->session);
+             register_check = true;
+         } else {
+-            return;
+-        }
+-    }
+-    unsigned char public_key[X25519_KEY_SIZE];
+-    unsigned char signature[PAIRING_SIG_SIZE];
++            goto verification_failed;
++        }
++    }
++    unsigned char public_key[X25519_KEY_SIZE] = {0};
++    unsigned char signature[PAIRING_SIG_SIZE] = {0};
+     const unsigned char *data = NULL;
+     int datalen = 0;
+ 
+     data = (unsigned char *) http_request_get_data(request, &datalen);
+-    if (datalen < 4) {
++    if (!data || datalen < 4) {
+         logger_log(raop->logger, LOGGER_ERR, "Invalid pair-verify data");
+-        return;
++        goto verification_failed;
+     }
+     switch (data[0]) {
+     case 1:
+         if (datalen != 4 + X25519_KEY_SIZE + ED25519_KEY_SIZE) {
+             logger_log(raop->logger, LOGGER_ERR, "Invalid pair-verify data");
+-            return;
+-        }
+-        /* We can fall through these errors, the result will just be garbage... */
++            goto verification_failed;
++        }
+         if (pairing_session_handshake(conn->session, data + 4, data + 4 + X25519_KEY_SIZE)) {
+             logger_log(raop->logger, LOGGER_ERR, "Error initializing pair-verify handshake");
++            goto verification_failed;
+         }
+         if (pairing_session_get_public_key(conn->session, public_key)) {
+             logger_log(raop->logger, LOGGER_ERR, "Error getting ECDH public key");
++            goto verification_failed;
+         }
+         if (pairing_session_get_signature(conn->session, signature)) {
+             logger_log(raop->logger, LOGGER_ERR, "Error getting ED25519 signature");
++            goto verification_failed;
+         }
+         if (register_check) {
+             bool registered_client = true;
+@@ -516,7 +537,7 @@
+             }
+ 
+             if (!registered_client) {
+-                return;
++                goto verification_failed;
+             }
+         }
+         *response_data = calloc(1, sizeof(public_key) + sizeof(signature));
+@@ -525,24 +546,29 @@
+             memcpy(*response_data, public_key, sizeof(public_key));
+             memcpy(*response_data + sizeof(public_key), signature, sizeof(signature));
+             *response_datalen = sizeof(public_key) + sizeof(signature);
+-        }
++        } else { goto verification_failed; }
+         break;
+     case 0:
+         logger_log(raop->logger, LOGGER_DEBUG, "2nd pair-verify step: checking signature");
+         if (datalen != 4 + PAIRING_SIG_SIZE) {
+             logger_log(raop->logger, LOGGER_ERR, "Invalid pair-verify data");
+-            return;
++            goto verification_failed;
+         }
+ 
+         if (pairing_session_finish(conn->session, data + 4)) {
+             logger_log(raop->logger, LOGGER_ERR, "Incorrect pair-verify signature");
+-            http_response_set_disconnect(response, 1);
+-            return;
++            goto verification_failed;
+         }
+         logger_log(raop->logger, LOGGER_DEBUG, "pair-verify: signature is verified");	    
+         http_response_add_header(response, "Content-Type", "application/octet-stream");
+         break;
+-    }
++    default:
++        goto verification_failed;
++    }
++    return;
++verification_failed:
++    http_response_init(response, "RTSP/1.0", 470, "Client Authentication Failure");
++    http_response_set_disconnect(response, 1);
+ }
+ 
+ static void
+@@ -621,6 +647,12 @@
+     // Parsing bplist
+     plist_t req_root_node = NULL;
+     plist_from_bin(data, data_len, &req_root_node);
++    if (!PLIST_IS_DICT(req_root_node)) {
++        plist_free(req_root_node);
++        http_response_init(response, "RTSP/1.0", 400, "Invalid setup plist");
++        http_response_set_disconnect(response, 1);
++        return;
++    }
+     plist_t req_ekey_node = plist_dict_get_item(req_root_node, "ekey");
+     plist_t req_eiv_node = plist_dict_get_item(req_root_node, "eiv");
+ 	
+@@ -630,6 +662,17 @@
+     if (PLIST_IS_DATA(req_eiv_node) && PLIST_IS_DATA(req_ekey_node)) {
+         // The first SETUP call that initializes keys and timing
+ 
++        uint64_t checked_eiv_len = 0, checked_ekey_len = 0;
++        const char *checked_eiv = plist_get_data_ptr(req_eiv_node, &checked_eiv_len);
++        const char *checked_ekey = plist_get_data_ptr(req_ekey_node, &checked_ekey_len);
++        if (!checked_eiv || !checked_ekey || checked_eiv_len != 16 || checked_ekey_len != 72) {
++            plist_free(req_root_node);
++            plist_free(res_root_node);
++            http_response_init(response, "RTSP/1.0", 400, "Invalid encryption key lengths");
++            http_response_set_disconnect(response, 1);
++            return;
++        }
++
+         unsigned char aesiv[16] = { 0 };
+         unsigned char aeskey[16] = { 0 };
+         unsigned char eaeskey[72] = { 0 };
+@@ -641,6 +684,14 @@
+         char *deviceID = NULL;
+         plist_t req_deviceid_node = plist_dict_get_item(req_root_node, "deviceID");
+         plist_get_string_val(req_deviceid_node, &deviceID);  
++        if (!deviceID || !*deviceID) {
++            plist_mem_free(deviceID);
++            plist_free(req_root_node);
++            plist_free(res_root_node);
++            http_response_init(response, "RTSP/1.0", 400, "Missing client identifier");
++            http_response_set_disconnect(response, 1);
++            return;
++        }
+ 
+ 
+         /* RFC2617 Digest authentication (md5 hash) of uxplay client-access password, if set */
+@@ -669,7 +720,12 @@
+                 int pin_4  = random_pin();
+                 if (pin_4 < 0) {
+                     logger_log(raop->logger, LOGGER_ERR, "Failed to generate random pin");
+-                    pin_4 = 1234;
++                    plist_mem_free(deviceID);
++                    plist_free(req_root_node);
++                    plist_free(res_root_node);
++                    http_response_init(response, "RTSP/1.0", 503, "Authentication unavailable");
++                    http_response_set_disconnect(response, 1);
++                    return;
+                 }
+                 if ((raop->random_pw =  (char *) calloc(pin_len + 1 + 18, sizeof(char)))) {
+                     char *pin = raop->random_pw;
+@@ -678,6 +734,12 @@
+                     snprintf(pin + pin_len + 1, 18, "%s", deviceID);
+                 } else {
+                     logger_log(raop->logger, LOGGER_ERR, "Failed to allocate raop->random_pw");
++                    plist_mem_free(deviceID);
++                    plist_free(req_root_node);
++                    plist_free(res_root_node);
++                    http_response_init(response, "RTSP/1.0", 503, "Authentication unavailable");
++                    http_response_set_disconnect(response, 1);
++                    return;
+                 }
+                 raop->auth_fail_count = 0;
+             }
+@@ -695,7 +757,24 @@
+                 char nonce_string[33] = { '\0' };
+                 //bool stale = false;  //not implemented
+                 if (len && authorization) {
+-                    const char *ptr = strstr(authorization, "nonce=\"") +  strlen("nonce=\"");
++                    const char *nonce_start = strstr(authorization, "nonce=\"");
++                    if (!nonce_start || strlen(nonce_start + strlen("nonce=\"")) < 33 || !raop->nonce) {
++                        plist_mem_free(deviceID);
++                        plist_free(req_root_node);
++                        plist_free(res_root_node);
++                        http_response_init(response, "RTSP/1.0", 401, "Invalid authentication");
++                        http_response_set_disconnect(response, 1);
++                        return;
++                    }
++                    const char *ptr = nonce_start + strlen("nonce=\"");
++                    if (ptr[32] != '"') {
++                        plist_mem_free(deviceID);
++                        plist_free(req_root_node);
++                        plist_free(res_root_node);
++                        http_response_init(response, "RTSP/1.0", 401, "Invalid authentication");
++                        http_response_set_disconnect(response, 1);
++                        return;
++                    }
+                     strncpy(nonce_string, ptr, 32);
+                     const char *method = http_request_get_method(request);
+                     conn->authenticated = pairing_digest_verify(method, authorization, password);
+@@ -740,13 +819,15 @@
+                     strncat(response_text, "\"", 80 - strlen(response_text) - 1);
+                     http_response_init(response, "RTSP/1.0", 401, "Unauthorized");
+                     http_response_add_header(response, "WWW-Authenticate", response_text);
++                    plist_mem_free(deviceID);
++                    plist_free(req_root_node);
++                    plist_free(res_root_node);
+                     return;
+                 }
+             }
+         }
+ 	
+-        char* eiv = NULL;
+-        uint64_t eiv_len = 0;
++        uint64_t eiv_len = checked_eiv_len;
+         char *model = NULL;
+         char *name = NULL;
+         bool admit_client = true;
+@@ -761,10 +842,10 @@
+             char *client_device_id = NULL;
+             char *client_pk = NULL;   /* encoded as null-terminated  base64 string, must be freed*/
+             get_pairing_session_client_data(conn->session, &client_device_id, &client_pk);
+-            if (client_pk && !strcmp(deviceID, client_device_id)) { 
++            if (client_pk && client_device_id && !strcmp(deviceID, client_device_id)) { 
+                 raop->callbacks.register_client(raop->callbacks.cls, client_device_id, client_pk, name); 
+-                free (client_pk);
+-            }
++            }
++            free(client_pk);
+         }
+         plist_mem_free(deviceID);
+         deviceID = NULL;
+@@ -779,9 +860,7 @@
+             return;
+         }
+ 
+-        plist_get_data_val(req_eiv_node, &eiv, &eiv_len);
+-        memcpy(aesiv, eiv, 16);
+-        free(eiv);	
++        memcpy(aesiv, checked_eiv, 16);
+         logger_log(raop->logger, LOGGER_DEBUG, "eiv_len = %llu", eiv_len);
+         if (logger_debug) {
+             char* str = utils_data_to_string(aesiv, 16, 16);
+@@ -789,11 +868,8 @@
+             free(str);
+         }
+ 
+-        char* ekey = NULL;
+-        uint64_t ekey_len = 0;
+-        plist_get_data_val(req_ekey_node, &ekey, &ekey_len);
+-        memcpy(eaeskey,ekey,72);
+-        free(ekey);
++        uint64_t ekey_len = checked_ekey_len;
++        memcpy(eaeskey, checked_ekey, 72);
+         logger_log(raop->logger, LOGGER_DEBUG, "ekey_len = %llu", ekey_len);
+         // eaeskey is 72 bytes, aeskey is 16 bytes
+         if (logger_debug) {
+--- a/lib/raop_rtp_mirror.c
++++ b/lib/raop_rtp_mirror.c
+@@ -53,6 +53,47 @@
+ 
+ #define SECOND_IN_NSECS 1000000000UL
+ #define SEC SECOND_IN_NSECS
++#define MAX_MIRROR_PAYLOAD (16 * 1024 * 1024)
++
++static bool
++same_mirror_peer(const struct sockaddr_storage *expected, const struct sockaddr_storage *actual)
++{
++    if (expected->ss_family != actual->ss_family) return false;
++    if (expected->ss_family == AF_INET) {
++        const struct sockaddr_in *a = (const struct sockaddr_in *) expected;
++        const struct sockaddr_in *b = (const struct sockaddr_in *) actual;
++        return a->sin_addr.s_addr == b->sin_addr.s_addr;
++    }
++    if (expected->ss_family == AF_INET6) {
++        const struct sockaddr_in6 *a = (const struct sockaddr_in6 *) expected;
++        const struct sockaddr_in6 *b = (const struct sockaddr_in6 *) actual;
++        return !memcmp(&a->sin6_addr, &b->sin6_addr, sizeof(a->sin6_addr)) &&
++               a->sin6_scope_id == b->sin6_scope_id;
++    }
++    return false;
++}
++
++/* Validate every codec offset before the existing parser dereferences it. */
++static bool
++valid_codec_payload(unsigned char *payload, int size)
++{
++    if (!payload || size < 8) return false;
++    if (!memcmp(payload + 4, "hvc1", 4)) {
++        int offset = 0x75;
++        for (int i = 0; i < 3; i++) {
++            if (offset > size - 5) return false;
++            int length = byteutils_get_short_be(payload, offset + 3);
++            if (length < 1 || length > 32767 || length > size - offset - 5) return false;
++            offset += 5 + length;
++        }
++        return true;
++    }
++    if (size < 11) return false;
++    int sps_size = byteutils_get_short_be(payload, 6);
++    if (sps_size < 1 || sps_size > 32767 || sps_size > size - 11) return false;
++    int pps_size = byteutils_get_short_be(payload, sps_size + 9);
++    return pps_size > 0 && pps_size <= 32767 && pps_size <= size - sps_size - 11;
++}
+ 
+ /* for MacOS, where SOL_TCP and TCP_KEEPIDLE are not defined */
+ #if !defined(SOL_TCP) && defined(IPPROTO_TCP)
+@@ -255,6 +296,12 @@
+                            "raop_rtp_mirror error in accept %d %s", sock_err, SOCKET_ERROR_STRING(sock_err));
+                 break;
+             }
++            if (!same_mirror_peer(&raop_rtp_mirror->remote_saddr, &saddr)) {
++                logger_log(raop_rtp_mirror->logger, LOGGER_WARNING, "Rejected mirror stream from unexpected peer");
++                CLOSESOCKET(stream_fd);
++                stream_fd = -1;
++                continue;
++            }
+ 
+             // We're calling recv for a certain amount of data, so we need a timeout
+             struct timeval tv;
+@@ -311,6 +358,7 @@
+                 logger_log(raop_rtp_mirror->logger, LOGGER_DEBUG,
+                            "raop_rtp_mirror tcp socket was closed by client (recv returned 0); got %d bytes of 128 byte header",readstart);
+                 FD_CLR(stream_fd, &rfds);
++                CLOSESOCKET(stream_fd);
+                 stream_fd = -1;
+                 continue;
+             } else if (payload == NULL && ret == -1) {
+@@ -324,6 +372,12 @@
+ 
+             /*packet[0:3] contains the payload size */
+             int payload_size = byteutils_get_int(packet, 0);
++            if (payload_size < 0 || payload_size > MAX_MIRROR_PAYLOAD ||
++                (packet[4] == 0x00 && payload_size < 4)) {
++                logger_log(raop_rtp_mirror->logger, LOGGER_WARNING, "Rejected invalid mirror payload length");
++                conn_reset = true;
++                break;
++            }
+             char packet_description[13] = {0};
+             char *p = packet_description;
+             int n = sizeof(packet_description);
+@@ -367,7 +421,11 @@
+             /* "streaming report" packets have no timestamp in packet[8:15] */
+ 
+             if (payload == NULL) {
+-                payload = malloc(payload_size);
++                payload = malloc(payload_size ? (size_t) payload_size : 1);
++                if (!payload) {
++                    conn_reset = true;
++                    break;
++                }
+                 readstart = 0;
+             }
+ 
+@@ -440,8 +498,8 @@
+                     assert(sps_pps);
+                     payload_out = (unsigned char*) malloc(payload_size + sps_pps_len);
+                     if (!payload_out) {
+-                        printf("Memory allocation failed (payload_out)\n");
+-                        exit(1);
++                        conn_reset = true;
++                        break;
+                     }
+                     payload_decrypted = payload_out + sps_pps_len;
+                     memcpy(payload_out, sps_pps, sps_pps_len);
+@@ -450,6 +508,10 @@
+                 } else {
+                     payload_out = (unsigned char*)  malloc(payload_size);
+                     payload_decrypted = payload_out;
++                    if (!payload_out) {
++                        conn_reset = true;
++                        break;
++                    }
+                 }
+                 // Decrypt data: AES-CTR encryption/decryption  does not change the size of the data
+                 mirror_buffer_decrypt(raop_rtp_mirror->buffer, payload, payload_decrypted, payload_size);
+@@ -460,10 +522,14 @@
+                 int nalu_size = 0;
+                 int nalus_count = 0;
+                 while (nalu_size < payload_size) {
++                    if (payload_size - nalu_size < 4) {
++                        valid_data = false;
++                        break;
++                    }
+                     int nc_len = byteutils_get_int_be(payload_decrypted, nalu_size);
+                     /* nc_len is read from the payload, so it is only a
+                      * length if the unit it claims fits in what is left. */
+-                    if (nc_len < 0 || nalu_size + 4 > payload_size ||
++                    if (nc_len < 1 || nalu_size + 4 > payload_size ||
+                         nc_len > payload_size - nalu_size - 4) {
+                         valid_data = false;
+                         break;
+@@ -478,7 +544,7 @@
+                     }
+                     int nalu_type = 0;
+                     if (h265_video) {
+-                        nalu_type = payload_decrypted[nalu_size] & 0x7e >> 1;;
++                        nalu_type = (payload_decrypted[nalu_size] & 0x7e) >> 1;
+                         //logger_log(raop_rtp_mirror->logger, LOGGER_DEBUG," h265 video, NALU type %d, size %d", nalu_type, nc_len);
+                     } else {
+                         nalu_type = payload_decrypted[nalu_size] & 0x1f;
+@@ -623,6 +689,11 @@
+                     unsupported_codec = true;
+                     break;
+                 }
++                if (!valid_codec_payload(payload, payload_size)) {
++                    logger_log(raop_rtp_mirror->logger, LOGGER_WARNING, "Rejected truncated codec configuration");
++                    conn_reset = true;
++                    break;
++                }
+                 if (sps_pps) {
+                     free(sps_pps);
+                     sps_pps = NULL;
+@@ -697,7 +768,7 @@
+ 
+                     sps_pps_len = vps_size + sps_size + pps_size + 12;
+                     sps_pps = (unsigned char*) malloc(sps_pps_len);
+-                    assert(sps_pps);
++                    if (!sps_pps) { conn_reset = true; break; }
+                     ptr = sps_pps;
+                     memcpy(ptr, nal_start_code, 4);
+                     ptr += 4;
+@@ -758,7 +829,7 @@
+                     // Copy the sps and pps into a buffer to prepend to the next NAL unit.
+                     sps_pps_len = sps_size + pps_size + 8;
+                     sps_pps = (unsigned char*) malloc(sps_pps_len);
+-                    assert(sps_pps);
++                    if (!sps_pps) { conn_reset = true; break; }
+                     memcpy(sps_pps, nal_start_code, 4);
+                     memcpy(sps_pps + 4, sequence_parameter_set, sps_size);
+                     memcpy(sps_pps + sps_size + 4, nal_start_code, 4); 
+@@ -817,6 +888,7 @@
+                             logger_log(raop_rtp_mirror->logger, LOGGER_INFO, "%s", plist_xml);
+                             free(plist_xml);
+                         }
++                        plist_free(root_node);
+                     }
+                 }
+                 break;
+@@ -830,7 +902,7 @@
+             payload = NULL;
+             memset(packet, 0, 128);
+             readstart = 0;
+-            if (unsupported_codec) {
++            if (unsupported_codec || conn_reset) {
+                 break;
+             }
+         }
+@@ -839,6 +911,8 @@
+     if (stream_fd != -1) {
+         CLOSESOCKET(stream_fd);
+     }
++    free(payload);
++    free(sps_pps);
+ 
+     // Ensure running reflects the actual state
+     MUTEX_LOCK(raop_rtp_mirror->run_mutex);
+--- a/macos_presentation.m
++++ b/macos_presentation.m
+@@ -0,0 +1,80 @@
++/* iPad to Mac Mirroring presentation for the pinned GStreamer Cocoa video window.
++ * Licensed under the same GPL-3.0-or-later terms as this UxPlay integration. */
++#import <AppKit/AppKit.h>
++#import <dispatch/dispatch.h>
++
++static id main_window_observer;
++static id key_window_observer;
++static id application_active_observer;
++
++static void brand_video_window(NSWindow *window)
++{
++    /* GStreamer 1.28.8 creates this normal, shareable window and then changes
++     * NSApp to Regular. Observe its later main/key transition, after creation,
++     * and change presentation only. No private selectors or GL access. */
++    Class video_window_class = NSClassFromString(@"GstGLNSWindow");
++    if (!video_window_class || ![window isKindOfClass:video_window_class]) return;
++    NSString *title = @"iPad to Mac Mirroring \u2014 Wireless";
++    if (![window.title isEqualToString:title]) window.title = title;
++    if (NSApp.activationPolicy != NSApplicationActivationPolicyAccessory)
++        [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
++}
++
++static void video_window_became_active(NSNotification *notification)
++{
++    if (![notification.object isKindOfClass:[NSWindow class]]) return;
++    NSWindow *window = notification.object;
++    if ([NSThread isMainThread]) {
++        brand_video_window(window);
++    } else {
++        /* The retained window survives until this block runs; closing it in the
++         * meantime does not make it visible again or alter its rendering. */
++        dispatch_async(dispatch_get_main_queue(), ^{ brand_video_window(window); });
++    }
++}
++
++void ipad_window_macos_presentation_refresh(void)
++{
++    /* Paused GL pipeline setup can create a hidden video window and force
++     * Regular before it ever becomes main/key. Refresh after renderer startup. */
++    if (![NSThread isMainThread]) {
++        dispatch_async(dispatch_get_main_queue(), ^{ ipad_window_macos_presentation_refresh(); });
++        return;
++    }
++    for (NSWindow *window in NSApp.windows) brand_video_window(window);
++    if (NSApp.activationPolicy != NSApplicationActivationPolicyAccessory)
++        [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
++}
++
++static void restore_minimized_video_windows(void)
++{
++    /* The controller explicitly activates this owned helper when the user asks
++     * to show its video. Restore minimized video only at that activation edge;
++     * frame updates and ordinary window notifications never raise it. */
++    if (![NSThread isMainThread]) {
++        dispatch_async(dispatch_get_main_queue(), ^{ restore_minimized_video_windows(); });
++        return;
++    }
++    Class video_window_class = NSClassFromString(@"GstGLNSWindow");
++    if (!video_window_class) return;
++    for (NSWindow *window in NSApp.windows) {
++        if ([window isKindOfClass:video_window_class] && window.isMiniaturized)
++            [window deminiaturize:nil];
++    }
++}
++
++void ipad_window_macos_presentation_install(void)
++{
++    @autoreleasepool {
++        if (main_window_observer) return;
++        /* Install before gst_macos_main, without creating NSApplication early or
++         * changing the delegate/activation policy owned by that GStreamer wrapper. */
++        NSNotificationCenter *center = [NSNotificationCenter defaultCenter];
++        main_window_observer = [center addObserverForName:NSWindowDidBecomeMainNotification
++            object:nil queue:nil usingBlock:^(NSNotification *note) { video_window_became_active(note); }];
++        key_window_observer = [center addObserverForName:NSWindowDidBecomeKeyNotification
++            object:nil queue:nil usingBlock:^(NSNotification *note) { video_window_became_active(note); }];
++        application_active_observer = [center addObserverForName:NSApplicationDidBecomeActiveNotification
++            object:nil queue:nil usingBlock:^(NSNotification *note) { restore_minimized_video_windows(); }];
++    }
++}
+--- a/renderers/CMakeLists.txt
++++ b/renderers/CMakeLists.txt
+@@ -1,10 +1,5 @@
+ 
+ if (APPLE )
+-  set( ENV{PKG_CONFIG_PATH} "/Library/FrameWorks/GStreamer.framework/Libraries/pkgconfig" ) # GStreamer.framework, preferred
+-  set( ENV{PKG_CONFIG_PATH} "$ENV{PKG_CONFIG_PATH}:/usr/local/lib/pkgconfig" ) # Brew or self-installed gstreamer
+-  set( ENV{PKG_CONFIG_PATH} "$ENV{PKG_CONFIG_PATH}:/opt/homebrew/lib/pkgconfig" ) # Brew, M1/M2 macs  
+-  set( ENV{PKG_CONFIG_PATH} "$ENV{PKG_CONFIG_PATH}:$ENV{HOMEBREW_PREFIX}/lib/pkgconfig" ) # Brew, using prefix
+-  set( ENV{PKG_CONFIG_PATH} "$ENV{PKG_CONFIG_PATH}:/opt/local/lib/pkgconfig/" ) # MacPorts
+   message( "PKG_CONFIG_PATH (Apple, renderers) = " $ENV{PKG_CONFIG_PATH} )
+   find_program( PKG_CONFIG_EXECUTABLE  pkg-config  PATHS /Library/FrameWorks/GStreamer.framework/Commands )
+   set(PKG_CONFIG_EXECUTABLE ${PKG_CONFIG_EXECUTABLE} --define-prefix )
+@@ -12,10 +7,8 @@
+   if ( DEFINED ENV{GSTREAMER_ROOT_DIR} )
+      if ( EXISTS "$ENV{GSTREAMER_ROOT_DIR}/pkgconfig" )
+        message ( STATUS "*** Using GSTREAMER_ROOT_DIR = " $ENV{GSTREAMER_ROOT_DIR} )
+-       set( ENV{PKG_CONFIG_PATH} "$ENV{GSTREAMER_ROOT_DIR}/pkgconfig:$ENV{PKG_CONFIG_PATH}" )
+      endif()
+   endif()
+-  set( ENV{PKG_CONFIG_PATH} "$ENV{PKG_CONFIG_PATH}:/usr/local/lib/pkgconfig" ) # standard location for self-installed gstreamer
+ endif()
+ 
+ find_package( PkgConfig REQUIRED )
+--- a/renderers/audio_renderer.c
++++ b/renderers/audio_renderer.c
+@@ -70,8 +70,12 @@
+ static gboolean check_plugins (void)
+ {
+     GstRegistry *registry = NULL;
+-    const gchar *needed[] = { "app", "libav", "playback", "autodetect", "videoparsersbad",  NULL};
+-    const gchar *gst[] = {"plugins-base", "libav", "plugins-base", "plugins-good", "plugins-bad", NULL};
++    /* The iPad Window build is video-only with an explicit native GL sink.
++     * Do not require unused FFmpeg/audio or automatic-sink plugins. */
++    const gchar *needed[] = { "app", "playback", "videoparsersbad", "applemedia",
++                             "opengl", "videoconvertscale", "coreelements", NULL};
++    const gchar *gst[] = { "plugins-base", "plugins-base", "plugins-bad", "plugins-bad",
++                          "plugins-base", "plugins-base", "gstreamer", NULL};
+     registry = gst_registry_get ();
+     gboolean ret = TRUE;
+     for (int i = 0; i < g_strv_length ((gchar **) needed); i++) {
+--- a/uxplay.cpp
++++ b/uxplay.cpp
+@@ -30,6 +30,7 @@
+ #include <fstream>
+ #include <sstream>
+ #include <iterator>
++#include <thread>
+ #include <sys/stat.h>
+ #include <cstdio>
+ #include <stdarg.h>
+@@ -64,6 +65,11 @@
+ #include "lib/stream.h"
+ #include "lib/logger.h"
+ #include "lib/dnssd.h"
++#include "embedded_video.h"
++#ifdef GST_MACOS
++extern "C" void ipad_window_macos_presentation_install(void);
++extern "C" void ipad_window_macos_presentation_refresh(void);
++#endif
+ #include "lib/crypto.h"
+ #include "renderers/video_renderer.h"
+ #include "renderers/audio_renderer.h"
+@@ -77,7 +83,7 @@
+ 
+ #define SECOND_IN_USECS 1000000
+ #define SECOND_IN_NSECS 1000000000UL
+-#define DEFAULT_NAME "UxPlay"
++#define DEFAULT_NAME "iPad to Mac Mirroring"
+ #define DEFAULT_DEBUG_LOG false
+ #define LOWEST_ALLOWED_PORT 1024
+ #define HIGHEST_PORT 65535
+@@ -104,10 +110,11 @@
+ static bool relaunch_video = false;
+ static bool reset_loop = false;
+ static unsigned int open_connections= 0;
+-static std::string videosink = "autovideosink";
++static std::string videosink = "glimagesink";
+ static std::string videosink_options = "";
+ static videoflip_t videoflip[2] = { NONE , NONE };
+ static bool use_video = true;
++static bool embedded_video = false;
+ static unsigned char compression_type = 0;
+ static std::string audiosink = "autoaudiosink";
+ static int  audiodelay = -1;
+@@ -229,6 +236,7 @@
+ static void log(int level, const char* format, ...) {
+     va_list vargs;
+     if (level > log_level) return;
++    flockfile(stdout);
+     switch (level) {
+     case 0:
+     case 1:
+@@ -246,6 +254,9 @@
+     vprintf(format, vargs);
+     printf("\n");
+     va_end(vargs);
++    /* iPad to Mac Mirroring consumes stdout through a pipe; publish PIN/status immediately. */
++    fflush(stdout);
++    funlockfile(stdout);
+ }
+ 
+ #define LOGD(...) log(LOGGER_DEBUG, __VA_ARGS__)
+@@ -1910,6 +1921,8 @@
+     return 0;
+ }
+ 
++static void ipad_window_dnssd_status(void *context, int error);
++
+ static int register_dnssd() {
+     int dnssd_error;
+     uint64_t features;
+@@ -1987,6 +2000,8 @@
+         return 1;
+     }
+ 
++    dnssd_set_status_callback(dnssd, ipad_window_dnssd_status, NULL);
++
+     /* after dnssd starts, reset the default feature set here 
+      * (overwrites features set in dnssdint.h)
+      * default: FEATURES_1 = 0x5A7FFEE6, FEATURES_2 = 0 */
+@@ -2116,6 +2131,7 @@
+ //to be simplified
+ 
+ extern "C" void video_reset(void *cls, reset_type_t type) {
++    if (embedded_video) ipad_window_video_reset();
+     switch (type) {
+     case RESET_TYPE_NOHOLD:
+         LOGD("video_reset: type = NoHold");
+@@ -2134,6 +2150,9 @@
+                                 videosink_options.c_str(), fullscreen, video_sync, h265_support,
+                                 render_coverart, playbin_version, NULL);
+             video_renderer_start();
++#ifdef GST_MACOS
++            ipad_window_macos_presentation_refresh();
++#endif
+             close_window = false;  // we already closed the window
+         }
+         preserve_connections = false; //we already closed all other connections
+@@ -2176,6 +2195,7 @@
+ }
+ 
+ extern "C" int video_set_codec(void *cls, video_codec_t codec) {
++    if (embedded_video) return codec == VIDEO_CODEC_H264 ? 0 : -1;
+     bool video_is_h265 = (codec == VIDEO_CODEC_H265);
+     if (mux_to_file) {
+         mux_renderer_choose_video_codec(video_is_h265);
+@@ -2186,7 +2206,38 @@
+     return video_renderer_choose_codec(false, video_is_h265);
+ }
+ 
++/* Only trusted callbacks emit machine events. The per-run token makes client
++ * names containing injected newlines incapable of spoofing the controller UI. */
++static void ipad_window_event(const char *event, const char *value = NULL) {
++    const char *token = getenv("IPAD_WINDOW_EVENT_TOKEN");
++    if (!token || strlen(token) != 36) return;
++    for (const char *p = token; *p; ++p) {
++        if (!isxdigit((unsigned char) *p) && *p != '-') return;
++    }
++    flockfile(stdout);
++    printf("IPADWINDOW_EVENT %s %s%s%s\n", token, event,
++           value ? " " : "", value ? value : "");
++    fflush(stdout);
++    funlockfile(stdout);
++}
++
++static void ipad_window_dnssd_status(void *context, int error) {
++    (void) context;
++    if (!error) {
++        ipad_window_event("BONJOUR_READY");
++        return;
++    }
++    char code[32];
++    snprintf(code, sizeof(code), "%d", error);
++    ipad_window_event("BONJOUR_FAILED", code);
++    /* A receiver without working discovery must not keep listening silently. */
++    _exit(1);
++}
++
+ extern "C" void display_pin(void *cls, char *pin) {
++    if (pin && strlen(pin) == 4 && std::all_of(pin, pin + 4, [](char digit) {
++        return digit >= '0' && digit <= '9';
++    })) ipad_window_event("PIN", pin);
+     int margin = 10;
+     int spacing = 3;
+     char *image = create_pin_display(pin, margin, spacing);
+@@ -2328,6 +2379,11 @@
+ }
+ 
+ extern "C" void video_process (void *cls, raop_ntp_t *ntp, video_decode_struct *data) {
++    if (embedded_video) {
++        if (!data || data->is_h265 || data->data_len < 0) _exit(1);
++        ipad_window_video_access_unit(data->data, static_cast<size_t>(data->data_len));
++        return;
++    }
+     if (dump_video) {
+         dump_video_to_file(data->data, data->data_len);
+     }
+@@ -2353,16 +2409,21 @@
+     }
+ }
+ 
++extern "C" void mirror_video_running  (void *cls, bool is_running) {
++    if (embedded_video) {
++        /* Only a real authenticated mirror session calls this lifecycle hook. */
++        ipad_window_video_reset();
++        return;
++    }
+ #ifdef DBUS
+-extern "C" void mirror_video_running  (void *cls, bool is_running) {
+-    if (scrsv != 1) {
+-        return;
+-    }
+-    dbus_screensaver_inhibiter(is_running);
+-}
++    if (scrsv == 1) dbus_screensaver_inhibiter(is_running);
++#else
++    (void) cls; (void) is_running;
+ #endif
++}
+ 
+ extern "C" void video_pause (void *cls) {
++    if (embedded_video) { ipad_window_video_reset(); return; }
+     if (use_video) {
+         video_renderer_pause();
+     }
+@@ -2474,6 +2535,8 @@
+ }
+ 
+ extern "C" void video_report_size(void *cls, float *width_source, float *height_source, float *width, float *height) {
++    /* Each codec-config/rotation packet precedes a fresh SPS/PPS-bearing AU. */
++    if (embedded_video) { ipad_window_video_reset(); return; }
+     if (use_video) {
+         video_renderer_size(width_source, height_source, width, height);
+     }
+@@ -2664,6 +2727,8 @@
+ }
+ 
+ extern "C" void log_callback (void *cls, int level, const char *msg) {
++    if (msg && !strcmp(msg, "Client authentication success")) ipad_window_event("AUTHENTICATED");
++    if (msg && !strcmp(msg, "Failed to generate random pin")) ipad_window_event("RNG_FAILED");
+     switch (level) {
+     case LOGGER_DEBUG:
+         LOGD("%s", msg);
+@@ -2711,9 +2776,7 @@
+     raop_cbs.export_dacp = export_dacp;
+     raop_cbs.video_reset = video_reset;
+     raop_cbs.video_set_codec = video_set_codec;
+-#ifdef DBUS
+     raop_cbs.mirror_video_running = mirror_video_running;
+-#endif
+     raop_cbs.on_video_play = on_video_play;
+     raop_cbs.on_video_scrub = on_video_scrub;
+     raop_cbs.on_video_rate = on_video_rate;
+@@ -2861,6 +2924,28 @@
+     }
+ }
+ 
++/* iPad to Mac Mirroring's receiver is intentionally a mirroring-only, ephemeral process.
++ * Reject options that could open arbitrary GStreamer pipelines or persist data
++ * before the upstream option parser can perform any file side effects. */
++static bool ipad_window_validate_arguments(int argc, char *argv[]) {
++    for (int i = 1; i < argc; ++i) {
++        std::string option(argv[i]);
++        if (option == "-nh" || option == "-pw" || option == "-m" ||
++            option == "-nofreeze" || option == "-h" || option == "-v") continue;
++        if (option != "-n" && option != "-s" && option != "-fps" &&
++            option != "-as" && option != "-vsync" && option != "-nc" &&
++            option != "-rc" && option != "-vs") return false;
++        if (++i >= argc || strlen(argv[i]) > 128) return false;
++        const std::string value(argv[i]);
++        if ((option == "-as" && value != "0") ||
++            (option == "-vsync" && value != "no") ||
++            (option == "-nc" && value != "no") ||
++            (option == "-rc" && value != "/dev/null") ||
++            (option == "-vs" && value != "glimagesink" && value != "osxvideosink")) return false;
++    }
++    return true;
++}
++
+ #ifdef GST_MACOS
+ /* workaround for GStreamer >= 1.22 "Official Builds" on macOS */
+ #include <TargetConditionals.h>
+@@ -2868,6 +2953,23 @@
+ void real_main (int argc, char *argv[]);
+ 
+ int main (int argc, char *argv[]) {
++    /* Informational commands do not need to initialize Cocoa or a receiver. */
++    if (argc == 2 && (!strcmp(argv[1], "-h") || !strcmp(argv[1], "-v"))) {
++        parse_arguments(argc, argv);
++        return 0;
++    }
++    if (!ipad_window_validate_arguments(argc, argv)) {
++        fprintf(stderr, "Unsupported option for the iPad to Mac Mirroring mirroring-only backend.\n");
++        return 1;
++    }
++    const char *embedded_mode = getenv("IPAD_WINDOW_EMBEDDED_VIDEO");
++    if (embedded_mode && strcmp(embedded_mode, "1")) return 1;
++    if (embedded_mode) {
++        /* No Cocoa application or GStreamer display is needed for private IPC. */
++        real_main(argc, argv);
++        return 0;
++    }
++    ipad_window_macos_presentation_install();
+     LOGI("*=== Using gst_macos_main wrapper for GStreamer >= 1.22 on macOS ===*");
+     return  gst_macos_main ((GstMainFunc) real_main, argc, argv , NULL);
+ }
+@@ -2879,6 +2981,36 @@
+     std::vector<char> server_hw_addr;
+     std::string config_file = "";
+ 
++    /* A crashed/force-quit controller must not leave a LAN receiver listening.
++     * This watchdog is independent of the network/event-loop threads. */
++    const pid_t receiver_parent = getppid();
++    if (receiver_parent <= 1) {
++        fprintf(stderr, "The iPad to Mac Mirroring controller is required.\n");
++        exit(1);
++    }
++    const char *embedded_mode = getenv("IPAD_WINDOW_EMBEDDED_VIDEO");
++    if (embedded_mode && strcmp(embedded_mode, "1")) exit(1);
++    embedded_video = embedded_mode != NULL;
++    if (embedded_video && ipad_window_video_initialize()) {
++        fprintf(stderr, "Invalid private video transport.\n");
++        exit(1);
++    }
++    const bool watch_video = embedded_video;
++    try {
++        std::thread([receiver_parent, watch_video]() {
++            for (;;) {
++                usleep(250000);
++                if (getppid() != receiver_parent) _exit(0);
++                if (watch_video && !ipad_window_video_peer_alive()) _exit(1);
++            }
++        }).detach();
++    } catch (...) {
++        fprintf(stderr, "Could not start receiver lifecycle watchdog.\n");
++        exit(1);
++    }
++
++    if (embedded_video) ipad_window_video_reset();
++
+ #ifdef _WIN32
+     if (!SetConsoleCtrlHandler(CtrlHandler, TRUE)) {
+         LOGE("Could not set control handler");
+@@ -2910,6 +3042,12 @@
+         lang = lang_env;
+     }
+     
++    /* Never read user rc files or environment-selected configuration. */
++    if (!ipad_window_validate_arguments(argc, argv)) {
++        fprintf(stderr, "Unsupported option for the iPad to Mac Mirroring mirroring-only backend.\n");
++        exit(1);
++    }
++#if 0
+     char *rcfile = NULL;
+     /* see if option -rc was given */
+     for (int i = 1; i < argc ; i++) {
+@@ -2936,7 +3074,32 @@
+     if (config_file.length()) {
+         read_config_file(config_file.c_str(), argv[0]);
+     }
++#endif
+     parse_arguments (argc, argv);
++
++    /* These policies also hold if the backend is launched outside the wrapper. */
++    pin_pw = 3;
++    setup_legacy_pairing = false;
++    do_append_hostname = false;
++    use_random_hw_addr = true;
++    hls_support = false;
++    dump_video = false;
++    dump_audio = false;
++    mux_to_file = false;
++    render_coverart = false;
++    registration_list = false;
++    keyfile.clear();
++    pairing_register.clear();
++    metadata_filename.clear();
++    coverart_filename.clear();
++    dacpfile.clear();
++    ble_filename.clear();
++    audiosink = "0";
++    if (embedded_video) {
++        use_video = false;
++        use_audio = false;
++        h265_support = false;
++    }
+ 
+     log_level = (debug_log ? LOGGER_DEBUG_DATA : LOGGER_INFO);
+     if (debug_log && suppress_packet_debug_data) {
+@@ -3126,7 +3289,7 @@
+         append_hostname(server_name);
+     }
+ 
+-    if (!gstreamer_init()) {
++    if (!embedded_video && !gstreamer_init()) {
+         LOGE ("stopping");
+         exit (1);
+     }
+@@ -3146,6 +3309,9 @@
+                             videosink_options.c_str(), fullscreen, video_sync, h265_support,
+                             render_coverart, playbin_version, NULL);
+         video_renderer_start();
++#ifdef GST_MACOS
++        ipad_window_macos_presentation_refresh();
++#endif
+ #ifdef __OpenBSD__
+     } else {
+         if (pledge("stdio rpath wpath cpath inet unix prot_exec", NULL) == -1) {
+@@ -3252,6 +3418,9 @@
+                                 render_coverart, playbin_version, uri);
+             full_video_reset = false;
+             video_renderer_start();
++#ifdef GST_MACOS
++            ipad_window_macos_presentation_refresh();
++#endif
+         }
+         if (reset_httpd) {
+             unsigned short port = raop_get_port(raop);

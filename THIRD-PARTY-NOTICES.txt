@@ -1,0 +1,60 @@
+iPad to Mac Mirroring wireless receiver backend
+
+This is a modified build of UxPlay 1.73.7, changed on 2026-10-26.
+Upstream tag v1.73.7 (df67c21):
+https://github.com/FDH2/UxPlay/releases/tag/v1.73.7
+UxPlay and its PlayFair component are GPL-3.0-or-later. The upstream copyright
+and license notices remain in the corresponding source. llhttp is MIT licensed;
+the inherited shairplay components carry LGPL notices in their source files.
+Full license texts used by this bundle are included in licenses/.
+
+The modifications are recorded in patches/ipad-window-hardening.patch in the
+source distribution: bounded unauthenticated HTTP/media inputs, checked crypto
+field lengths, alignment-safe byte access, malformed-Digest rejection, secure
+PIN generation failure handling, mirror-peer validation, ephemeral mirroring-only
+configuration, remote-URL/HLS dispatch rejection, tokenized controller events,
+Bonjour lifecycle reporting, bounded private H264 IPC to the parent canvas,
+and a parent-death watchdog. This is a focused security review, not a claim of
+complete protocol or dependency security. The receiver is for a trusted LAN.
+
+The backend statically links libplist 2.7.0 (LGPL-2.1-or-later) and OpenSSL 3.6.5
+(Apache-2.0). Their original source archives and exact SHA-256 pins are recorded
+in dependencies.json in the source distribution. The public rebuild script
+rebuild_backend.py obtains those archives, verifies their pins, applies the patch,
+and builds only inside its own directory. It does not install anything globally.
+
+GStreamer 1.28.8 and the selected plugin/dependency libraries are dynamically
+linked. They are extracted from the official macOS runtime/development packages;
+the pinned package hashes match the publisher's .sha256sum files. No installer
+scripts are executed. Only the required plugin subset and its dependency closure
+are redistributed; the package manifest lists the included binary files.
+
+GStreamer corresponding source and release build machinery:
+https://gstreamer.freedesktop.org/src/gstreamer/gstreamer-1.28.8.tar.xz
+https://gstreamer.freedesktop.org/src/gst-plugins-base/gst-plugins-base-1.28.8.tar.xz
+https://gstreamer.freedesktop.org/src/gst-plugins-good/gst-plugins-good-1.28.8.tar.xz
+https://gstreamer.freedesktop.org/src/gst-plugins-bad/gst-plugins-bad-1.28.8.tar.xz
+https://gitlab.freedesktop.org/gstreamer/cerbero/-/tree/1.28.8
+The official Cerbero recipes describe the exact dependency source releases,
+patches, and build configuration used by the upstream macOS packages. This bundle
+does not modify their source; it thins universal Mach-O files to arm64, relocates
+library load paths, removes debug symbols, and applies ad-hoc signatures.
+source-dependencies.json also pins the selected runtime dependency sources,
+including MoltenVK1.2.9 and its upstream dependency revision chain. The
+collect_corresponding_source.py script checks those archives and packages them
+with the matching receiver source, patches, and build instructions.
+
+For public binary distribution, accompany the binaries with this notice, all
+applicable licenses, and the complete corresponding source/build instructions
+required by GPL/LGPL for the distributed components. Do not assume that linking
+to an upstream home page alone discharges source distribution obligations. Users
+must remain able to rebuild/relink the application with modified LGPL libraries;
+the ad-hoc build does not impose hardened runtime library validation. Original
+source archives and the hardened patch should be retained alongside releases.
+CORRESPONDING-SOURCE.txt describes the matching source archive, exact dependency
+coverage, rebuild/relink steps, and the boundary of the performed verification.
+The original app code may be MIT licensed; this GPL receiver is not relicensed
+under MIT, and the distributed bundle is not MIT-only.
+
+No Apple signing identity, notarization, App Store distribution, or commercial
+AirPlay certification is implied. AirPlay is a trademark of Apple Inc.

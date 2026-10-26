@@ -1,0 +1,135 @@
+{
+  "gstreamer-1.28.8.tar.xz": {
+    "url": "https://gstreamer.freedesktop.org/src/gstreamer/gstreamer-1.28.8.tar.xz",
+    "sha256": "baa8e86985ad6417cc0ad6e7b79ff2884c6779c8b1c7a6240e7121822c86e524",
+    "verification": "Exact source checksum in the official Cerbero 1.28.8 recipes/gstreamer-1.0.recipe.",
+    "recipe": "gstreamer-1.0"
+  },
+  "gst-plugins-base-1.28.8.tar.xz": {
+    "url": "https://gstreamer.freedesktop.org/src/gst-plugins-base/gst-plugins-base-1.28.8.tar.xz",
+    "sha256": "ade70e3381fcbb024f1f20aa9ede9b5654aeed39d5bd70b1a98f53015e501117",
+    "verification": "Exact source checksum in the official Cerbero 1.28.8 recipes/gst-plugins-base-1.0.recipe.",
+    "recipe": "gst-plugins-base-1.0"
+  },
+  "gst-plugins-bad-1.28.8.tar.xz": {
+    "url": "https://gstreamer.freedesktop.org/src/gst-plugins-bad/gst-plugins-bad-1.28.8.tar.xz",
+    "sha256": "670d888bde8242579b0d8e91f60cf337aa7be20ca7c315ebfbdd6e5a9218d104",
+    "verification": "Exact source checksum in the official Cerbero 1.28.8 recipes/gst-plugins-bad-1.0.recipe.",
+    "recipe": "gst-plugins-bad-1.0"
+  },
+  "glib-2.82.4.tar.xz": {
+    "url": "https://download.gnome.org/sources/glib/2.82/glib-2.82.4.tar.xz",
+    "sha256": "37dd0877fe964cd15e9a2710b044a1830fb1bd93652a6d0cb6b8b2dff187c709",
+    "verification": "Exact source checksum in the official Cerbero 1.28.8 recipes/glib.recipe.",
+    "recipe": "glib"
+  },
+  "proxy-libintl-0.5.tar.gz": {
+    "url": "https://github.com/frida/proxy-libintl/archive/refs/tags/0.5.tar.gz",
+    "sha256": "f7a1cbd7579baaf575c66f9d99fb6295e9b0684a28b095967cfda17857595303",
+    "verification": "Exact source checksum in the official Cerbero 1.28.8 recipes/proxy-libintl.recipe.",
+    "recipe": "proxy-libintl"
+  },
+  "libffi-meson-3.2.9999.5.tar.bz2": {
+    "url": "https://gitlab.freedesktop.org/gstreamer/meson-ports/libffi/-/archive/meson-3.2.9999.5/libffi-meson-3.2.9999.5.tar.bz2",
+    "sha256": "b4d403932a8860589e571300e807e40bb4f7d9d2630c8ec19c29fb9e7b0fd227",
+    "verification": "Exact source checksum in the official Cerbero 1.28.8 recipes/libffi.recipe.",
+    "recipe": "libffi"
+  },
+  "pcre2-10.42.tar.bz2": {
+    "url": "https://github.com/PhilipHazel/pcre2/releases/download/pcre2-10.42/pcre2-10.42.tar.bz2",
+    "sha256": "8d36cd8cb6ea2a4c2bb358ff6411b0c788633a2a45dabbf1aeb4b701d1b5e840",
+    "verification": "Exact source checksum in the official Cerbero 1.28.8 recipes/pcre2.recipe.",
+    "recipe": "pcre2"
+  },
+  "zlib-1.3.1.tar.gz": {
+    "url": "https://zlib.net/fossils/zlib-1.3.1.tar.gz",
+    "sha256": "9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23",
+    "verification": "Exact source checksum in the official Cerbero 1.28.8 recipes/zlib.recipe.",
+    "recipe": "zlib"
+  },
+  "libpng-1.6.56.tar.xz": {
+    "url": "https://download.sourceforge.net/libpng/libpng-1.6.56.tar.xz",
+    "sha256": "f7d8bf1601b7804f583a254ab343a6549ca6cf27d255c302c47af2d9d36a6f18",
+    "verification": "Exact source checksum in the official Cerbero 1.28.8 recipes/libpng.recipe.",
+    "recipe": "libpng"
+  },
+  "orc-0.4.42.tar.xz": {
+    "url": "https://gstreamer.freedesktop.org/src/orc/orc-0.4.42.tar.xz",
+    "sha256": "7ec912ab59af3cc97874c456a56a8ae1eec520c385ec447e8a102b2bd122c90c",
+    "verification": "Exact source checksum in the official Cerbero 1.28.8 recipes/orc.recipe.",
+    "recipe": "orc"
+  },
+  "graphene-1.10.8.tar.gz": {
+    "url": "https://github.com/ebassi/graphene/archive/1.10.8.tar.gz",
+    "sha256": "922dc109d2dc5dc56617a29bd716c79dd84db31721a8493a13a5f79109a4a4ed",
+    "verification": "Exact source checksum in the official Cerbero 1.28.8 recipes/graphene.recipe.",
+    "recipe": "graphene"
+  },
+  "libjpeg-turbo-3.1.0.tar.gz": {
+    "url": "https://github.com/libjpeg-turbo/libjpeg-turbo/releases/download/3.1.0/libjpeg-turbo-3.1.0.tar.gz",
+    "sha256": "9564c72b1dfd1d6fe6274c5f95a8d989b59854575d4bbee44ade7bc17aa9bc93",
+    "verification": "Exact source checksum in the official Cerbero 1.28.8 recipes/libjpeg-turbo.recipe.",
+    "recipe": "libjpeg-turbo"
+  },
+  "cerbero-1.28.8.tar.gz": {
+    "url": "https://github.com/GStreamer/cerbero/archive/refs/tags/1.28.8.tar.gz",
+    "sha256": "50361646dbab5c2ccd3ff5a4135fe1aab78ebb8d0f00c21b778cd46ab8faaf34",
+    "verification": "Pinned archive of the official GStreamer Cerbero 1.28.8 release tag; includes upstream build recipes and patches."
+  },
+  "gst-plugins-good-1.28.8.tar.xz": {
+    "url": "https://gstreamer.freedesktop.org/src/gst-plugins-good/gst-plugins-good-1.28.8.tar.xz",
+    "sha256": "a7670ed900d3d03be744d25c1873b239896e9a82ce6d17f8febc6fffbaee9521",
+    "verification": "Exact source checksum in the official Cerbero 1.28.8 recipes/gst-plugins-good-1.0.recipe.",
+    "recipe": "gst-plugins-good-1.0"
+  },
+  "MoltenVK-v1.2.9.tar.gz": {
+    "url": "https://github.com/KhronosGroup/MoltenVK/archive/refs/tags/v1.2.9.tar.gz",
+    "sha256": "f415a09385030c6510a936155ce211f617c31506db5fbc563e804345f1ecf56e",
+    "verification": "Pinned official MoltenVK1.2.9 source tag, matching the version embedded in the SDK1.3.283.0 runtime library."
+  },
+  "cereal-51cbda5f30e56c801c07fe3d3aba5d7fb9e6cca4.tar.gz": {
+    "url": "https://github.com/USCiLab/cereal/archive/51cbda5f30e56c801c07fe3d3aba5d7fb9e6cca4.tar.gz",
+    "sha256": "26361b539fe50eee308b564faa2742166d2922a7ab0bd4870ac55708581228c8",
+    "verification": "Official GitHub commit archive pinned by MoltenVK1.2.9 ExternalRevisions/cereal_repo_revision."
+  },
+  "glslang-e8dd0b6903b34f1879520b444634c75ea2deedf5.tar.gz": {
+    "url": "https://github.com/KhronosGroup/glslang/archive/e8dd0b6903b34f1879520b444634c75ea2deedf5.tar.gz",
+    "sha256": "403e222deb50576fa6af5f72b8a506cd144863807144451f986d87d49b66def9",
+    "verification": "Official GitHub commit archive pinned by MoltenVK1.2.9 ExternalRevisions/glslang_repo_revision."
+  },
+  "SPIRV-Cross-84cdc3b68e5ef5a15ecfacda77c61f24a9080cf9.tar.gz": {
+    "url": "https://github.com/KhronosGroup/SPIRV-Cross/archive/84cdc3b68e5ef5a15ecfacda77c61f24a9080cf9.tar.gz",
+    "sha256": "ab6a6c980048b72b44c341ffea63d1e91c3e5387a8c30cb03016dac9bc02ece6",
+    "verification": "Official GitHub commit archive pinned by MoltenVK1.2.9 ExternalRevisions/SPIRV-Cross_repo_revision."
+  },
+  "Vulkan-Headers-eaa319dade959cb61ed2229c8ea42e307cc8f8b3.tar.gz": {
+    "url": "https://github.com/KhronosGroup/Vulkan-Headers/archive/eaa319dade959cb61ed2229c8ea42e307cc8f8b3.tar.gz",
+    "sha256": "700dcd2aeb3a7f7986998eae69a6a712bfaabf2524879328fe086c7132941411",
+    "verification": "Official GitHub commit archive pinned by MoltenVK1.2.9 ExternalRevisions/Vulkan-Headers_repo_revision."
+  },
+  "Vulkan-Tools-09f5cc6b0758a05ccd6bcde1342256c15c76670e.tar.gz": {
+    "url": "https://github.com/KhronosGroup/Vulkan-Tools/archive/09f5cc6b0758a05ccd6bcde1342256c15c76670e.tar.gz",
+    "sha256": "a8c16fbdfbe3b665e4fb1e9c47bd40c10eec852205437c52242629a9dddbd5de",
+    "verification": "Official GitHub commit archive pinned by MoltenVK1.2.9 ExternalRevisions/Vulkan-Tools_repo_revision."
+  },
+  "Volk-3a8068a57417940cf2bf9d837a7bb60d015ca2f1.tar.gz": {
+    "url": "https://github.com/zeux/volk/archive/3a8068a57417940cf2bf9d837a7bb60d015ca2f1.tar.gz",
+    "sha256": "d3ef910747001d583e2025927595cea2acf5c9fff1b443a8bb5bd96331f3a2e2",
+    "verification": "Official GitHub commit archive pinned by MoltenVK1.2.9 ExternalRevisions/Volk_repo_revision."
+  },
+  "SPIRV-Tools-dd4b663e13c07fea4fbb3f70c1c91c86731099f7.tar.gz": {
+    "url": "https://github.com/KhronosGroup/SPIRV-Tools/archive/dd4b663e13c07fea4fbb3f70c1c91c86731099f7.tar.gz",
+    "sha256": "03ee1a2c06f3b61008478f4abe9423454e53e580b9488b47c8071547c6a9db47",
+    "verification": "Official GitHub revision archive pinned by the included glslang known_good.json (MoltenVK1.2.9 dependency)."
+  },
+  "SPIRV-Headers-4f7b471f1a66b6d06462cd4ba57628cc0cd087d7.tar.gz": {
+    "url": "https://github.com/KhronosGroup/SPIRV-Headers/archive/4f7b471f1a66b6d06462cd4ba57628cc0cd087d7.tar.gz",
+    "sha256": "7ea8624762d0e217aced805d73d84b7ceb4d37439abd182c2714ad97d7fe3f13",
+    "verification": "Official GitHub revision archive pinned by the included glslang known_good.json (MoltenVK1.2.9 dependency)."
+  },
+  "googletest-v1.14.0.tar.gz": {
+    "url": "https://github.com/google/googletest/archive/v1.14.0.tar.gz",
+    "sha256": "8ad598c73ad796e0d8280b082cebd82a630d73e73cd3c70057938a6501bba5d7",
+    "verification": "Official GitHub revision archive pinned by the included glslang known_good.json (MoltenVK1.2.9 dependency)."
+  }
+}

@@ -1,0 +1,58 @@
+# Build products and downloaded runtimes are not source publications.
+/build/
+/vendor/Wireless/
+/vendor/downloads/
+/.build/
+/dist/
+/scripts/native/build/
+/scripts/native/bundle/
+/scripts/native/downloads/
+/scripts/native/prefix/
+/scripts/native/sources/libplist-*/
+/scripts/native/sources/openssl-*/
+__pycache__/
+*.pyc
+*.app/
+*.dSYM/
+*.zip
+
+# Local configuration, credentials, receiver state, and diagnostics.
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+*.mobileprovision
+*.log
+*.crash
+*.ips
+.uxplayrc
+.uxplay.register
+.uxplay.pem
+registered_keys
+gst-registry*
+
+# Personal captures and operating-system metadata.
+*.mp4
+*.mov
+*.mkv
+*.heic
+*.jpeg
+*.jpg
+*.png
+.DS_Store
+._*
+
+# Approved documentation images contain generated sample content only.
+!docs/images/
+!docs/images/wireless-sidebar.jpg
+!docs/images/clean-view.jpg
+!docs/images/usb-setup.jpg
+
+# Native source-release/download archives are release assets, not Git sources.
+*.tar.xz
+*.tar.gz
+*.tar.bz2
+*.pkg

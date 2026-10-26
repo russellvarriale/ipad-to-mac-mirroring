@@ -1,0 +1,55 @@
+Run date: 2026-10-26
+Target: Apple silicon, Swift 5 language mode
+Controller/IPC target: macOS 14.0 or later
+Synthetic renderer target: macOS 14.4 or later
+
+PASS: 110 wireless security-boundary checks
+PASS: 94 wireless video transport checks
+PASS: 53 synthetic H.264 parser, decoder, and session checks
+
+The canonical public runners in this tests directory were run against the
+current production sources in the parent directory. The controller and
+transport suites use only local C fixtures/private sockets and start no actual
+receiver, network service, recording, or window. Output contains no session
+tokens or connection codes.
+
+Controller checks cover exact-token authentication/Bonjour events, input bounds,
+spoof/stale-input rejection, secure tokens, names, randomness-failure cleanup,
+and real status-pipe lifecycle. Five renderer-failure controller checks verify
+stale UUID rejection, immediate video-session end, useful failure preservation
+through expected child exit, and no duplicate session-end callback.
+Thirteen status-mailbox checks additionally cover a 10,000-event blocked-main
+flood, bounded latest-PIN delivery, specific terminal-failure/exit ordering,
+stale/replaced/ended runs, and actual controller cleanup of a coalesced
+startup-failure-exit sequence. This addresses a UI-backlog availability issue;
+it does not change authentication or establish an authentication bypass.
+Three sidebar-readiness checks reject stale/shutdown updates and verify that
+current decoded-video readiness clears the connection code and shows connected
+guidance. No external process is changed by these readiness checks.
+Five separated-drain checks preserve useful policy/decoder errors through later
+generic failures and exit, and retain lifecycle tracking when Stop was clicked
+before a queued started event arrived. These synthetic events launch no child.
+
+Transport checks cover bounded framing, fragmentation, malformed/truncated
+packets, real socket delivery, backpressure/failure handling, descriptor cleanup,
+and the Process.standardInput socket inherited as child fd0.
+
+The separate renderer test ran with access to the system video codec service.
+It generated one IDR plus two dependent P frames and passed them through the
+production parser and renderer until AVSampleBufferDisplayLayer became ready
+for display. It also checked parser bounds, invalid codec parameters, IDR
+recovery, stale-session guards, bounded/coalesced UI delivery, and pending-event
+cancellation across session changes. Its synthetic-only window closed when the
+test completed. No camera, screen, device, or network was captured.
+
+Separate live validation
+
+The user confirmed version 2.1 wireless video in the main iPad to Mac Mirroring window, working
+Clean View, and Loom's window preview with its Mac-camera bubble. USB video and
+authenticated wireless video on a hotspot had also been confirmed in earlier
+live testing. These are manual compatibility checks on the user's setup, not
+claims of support for every iPad, network, or recording configuration.
+
+iPad rotation was not separately verified. The agent performed no actual Loom
+recording or upload. The app is video only; Loom supplies camera/microphone
+recording. See SECURITY-REVIEW.txt for remaining scope and limitations.
