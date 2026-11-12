@@ -321,3 +321,38 @@ OpenSSL September 2026 security fixes:
 https://openssl-library.org/news/secadv/20260929.txt
 libplist published advisory listing:
 https://github.com/libimobiledevice/libplist/security/advisories
+
+
+DMG packaging addendum — 2026-11-12
+===================================
+The v2.2.0 app code and native runtime are unchanged from the reviewed build.
+A drag-to-Applications DMG and installer/download documentation were added.
+The public source now has 156 files, including scripts/package-dmg.sh.
+
+All 37 Mach-O files target arm64. The app/receiver minimum is macOS 14.0;
+other bundled libraries target macOS 11.0. Every non-system dynamic-library
+reference resolves within the bundle, while Swift runtime references use
+macOS system locations. Xcode, Command Line Tools, Homebrew, Python and CMake
+are build-time requirements, not requirements for recipients of the DMG.
+
+The packaging script creates an HFS+ image in private staging, normalizes
+only unsigned FinderInfo/ResourceFork metadata on its generated app copy,
+checks the existing signatures, compresses/verifies the image, and checks
+its final read-only mount before moving it into the release output. Owned
+mounts are detached before cleanup; partial attachments and interrupt paths
+retain staging if safe detachment cannot be confirmed. No quarantine or
+Gatekeeper setting is disabled or modified on the recipient's Mac.
+
+The installer was mounted read-only and copied into a temporary installation
+folder. The mounted and copied app's 91 files exactly matched the reviewed
+app, executable permissions were retained, and both passed deep strict
+signature verification. The only top-level items are the app, an Applications
+shortcut pointing to /Applications, and generic Read Me instructions.
+
+No Developer ID Application signing identity was available. The app remains
+ad-hoc signed, and neither app nor DMG is Apple-notarized. Public assets are
+explicitly labeled as an unnotarized preview. macOS can block first launch,
+and managed Macs may prohibit it. A DMG is not a substitute for Developer ID
+signing/notarization; a fresh quarantined-browser-download launch on another
+Mac was not performed. The release includes matching app source, the verified
+native corresponding-source archive and SHA-256 checksums.

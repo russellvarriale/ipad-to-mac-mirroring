@@ -15,6 +15,7 @@ __pycache__/
 *.app/
 *.dSYM/
 *.zip
+*.dmg
 
 # Local configuration, credentials, receiver state, and diagnostics.
 .env

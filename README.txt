@@ -3,6 +3,16 @@ iPad to Mac Mirroring 2.2.0
 USB and wireless iPad screen mirroring in a capturable Mac window.
 Apple Silicon; macOS 14 or later. Locally tested on macOS 26.
 
+INSTALL A PREBUILT APP
+Download the v2.2.0 preview DMG from the GitHub release, open it, drag the app
+onto Applications, eject the image, and open the app from Applications.
+No Xcode, Homebrew, Python, or Terminal is needed to run it.
+https://github.com/russellvarriale/ipad-to-mac-mirroring/releases/tag/v2.2.0
+
+This preview is ad-hoc signed and not notarized. macOS may block first launch;
+review the signing note and Apple guidance linked in README.md. Packaging a
+DMG does not remove Gatekeeper checks. Some managed Macs may not allow it.
+
 USB MIRRORING
 1. Open iPad to Mac Mirroring.app, select USB at the top, and connect the iPad
    with a USB data cable.

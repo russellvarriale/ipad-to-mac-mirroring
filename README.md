@@ -36,6 +36,29 @@ The current build targets arm64. An Intel Mac build is not provided or tested.
 Protected video apps may prevent mirroring. Compatibility with every iPad/iPadOS
 combination is not guaranteed.
 
+## Download and install — no Xcode needed
+
+[**Download the Apple silicon DMG (v2.2.0 preview)**](https://github.com/russellvarriale/ipad-to-mac-mirroring/releases/download/v2.2.0/iPad-to-Mac-Mirroring-2.2.0-arm64.dmg)
+
+1. Open the downloaded `.dmg`.
+2. Drag **iPad to Mac Mirroring.app** onto the **Applications** shortcut.
+3. Eject the disk image and open the app from Applications.
+
+The app includes its wireless receiver and runtime libraries. You do **not**
+need Xcode, Command Line Tools, Homebrew, Python, CMake, or Terminal to run it.
+It requires an **Apple silicon Mac with macOS 14 or later**.
+
+**Preview signing status:** this build is ad-hoc signed and **not Apple-notarized**.
+macOS may block the first launch. If you trust this project and have verified the
+release checksum, follow [Apple's per-app approval instructions](https://support.apple.com/en-us/102445)
+in System Settings → Privacy & Security. A DMG does not bypass Gatekeeper;
+some managed Macs will not allow this preview. A Developer ID-signed/notarized
+release is a separate step.
+
+The [release page](https://github.com/russellvarriale/ipad-to-mac-mirroring/releases/tag/v2.2.0)
+also includes matching app source, native corresponding source, and SHA-256
+checksums. Build instructions below are for developers who want to modify the app.
+
 ## Mirror over USB
 
 1. Open **iPad to Mac Mirroring** and select **USB**.
@@ -144,9 +167,10 @@ the iPad, then reconnect. Keep the iPad unlocked and try unprotected content.
 **The image has borders:** press **⌘0** to fit the window and hide the sidebar
 or use Clean View. The viewer preserves the source aspect ratio.
 
-**A downloaded build is blocked:** these local builds are ad-hoc signed, not
-Developer ID-signed/notarized. Build from source if you want to inspect exactly
-what you run. Notarized public binaries are a separate release step.
+**A downloaded build is blocked:** the preview DMG is ad-hoc signed and
+unnotarized. Read the signing-status note in [Download and install](#download-and-install--no-xcode-needed)
+and Apple's linked guidance. There is no need to install Xcode to run the
+prebuilt app. Notarized public binaries are a separate release step.
 
 ## Build from source
 
@@ -183,6 +207,19 @@ Keep the generated `.tar.xz` and its checksum as release assets rather than
 committing dependency archives into the Git repository. The collector verifies
 pinned source archives and build recipes. A full Cerbero/SDK source rebuild has
 not been verified; read `CORRESPONDING-SOURCE.txt` for the precise coverage.
+
+To package an existing build as a drag-to-Applications DMG:
+
+```sh
+./scripts/package-dmg.sh
+# Or specify the prebuilt app and output directory:
+./scripts/package-dmg.sh "/path/to/iPad to Mac Mirroring.app" "/path/to/output"
+```
+
+This verifies the staged app's existing signatures, adds the Applications
+shortcut and install notes, creates a compressed image, and verifies the image.
+It does not add a Developer ID signature or notarization. Publish the matching
+source assets and checksums beside the DMG.
 
 The build uses local ad-hoc signing. See [native build details](scripts/native/NOTICE.txt)
 and [licensing/release requirements](LICENSES.md) before distributing a binary.

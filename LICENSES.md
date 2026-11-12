@@ -6,7 +6,7 @@ GPL-licensed wireless receiver. It is **not an MIT-only distribution**.
 | Part | License |
 | --- | --- |
 | Original Swift app (`Main.swift`, `WirelessReceiver.swift`, `WirelessVideo.swift`, `WirelessVideoTransport.swift`) | [MIT](LICENSE) |
-| Original root build script, `scripts/build-wireless.sh`, icon generator, first-party test harnesses, documentation, and original artwork | [MIT](LICENSE) |
+| Original root build script, `scripts/build-wireless.sh`, `scripts/package-dmg.sh`, icon generator, first-party test harnesses, documentation, and original artwork | [MIT](LICENSE) |
 | UxPlay and the native receiver integration under `scripts/native/`, including local patches | GPL-3.0-or-later, except files with their own upstream license notices |
 | UxPlay's bundled third-party source | Its existing file-level licenses; notices are preserved |
 | Runtime dependencies used by the wireless helper | Their respective GPL/LGPL/Apache/MIT and other licenses; see [third-party notices](THIRD-PARTY-NOTICES.txt) |
